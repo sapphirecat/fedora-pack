@@ -1,0 +1,562 @@
+#!/usr/bin/env perl
+
+# https://github.com/sapphirecat/fedora-pack
+#
+# Convert a Fedora Cloud raw image to a full OVA machine archive
+# Copyright (C) 2014 Sapphire Cat <https://github.com/sapphirecat>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, only version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use 5.010;
+use strict;
+use warnings;
+
+use Cwd qw(abs_path);
+use File::Basename qw(basename);
+use File::Path qw(make_path);
+use File::Spec::Functions qw(catfile tmpdir);
+use File::Temp qw(tempdir);
+
+use Digest::SHA qw(sha1_hex);
+use Getopt::Long qw(GetOptions);
+use Time::HiRes qw(time);
+
+use constant ENV_SCOPE => 'FEDORAPACK_';
+use constant VBOX_OS_TYPE => 'Fedora';
+
+our $VERSION = '0.5.0'; # SemVer
+
+my $options; # hashref, assigned near GetOptions call
+my @unarchivers = qw(xz pxz pixz);
+
+my $_exit = { # control flags for the END block
+	pid => $$,
+	zombie_vdi => undef,
+};
+
+
+sub find_basename () {
+	state $n;
+	$n = basename($0) unless (defined $n);
+
+	return $n;
+}
+
+sub usage (;$$) {
+	if (! $_[0]) {
+		version();
+		select STDOUT;
+	} else {
+		select STDERR;
+	}
+
+	if (@_ > 1) {
+		say pop;
+		say;
+	}
+
+	my $basename = find_basename();
+	my $var = ENV_SCOPE;
+	say <<HELP;
+Usage: $basename [ options ] path/to/fedora-cloud.iso
+
+Options:
+    --32bit           Set the guest to 32-bit mode (for i686 cloud images.)
+ -k/--pubkey KEYFILE  SSH public key to authorize for the image's default user.
+ -n/--name HOSTNAME   Hostname (and instance-id) to set.
+ -o/--objdir PATH     Where to create final OVA.
+ -p/--sshport PORT    Host port to be forwarded to the guest's SSH port.
+ -t/--tmpdir PATH     Where to create tempfiles and ISO.
+
+Options may also be supplied via environment, by appending the long option's
+all-capitals name to '$var'.  For instance:
+
+  ${var}PUBKEY=aws.pub $basename
+
+Command line options, when present, override environment values.
+HELP
+
+	exit(shift // 2);
+}
+
+sub version (;$) {
+	my $basename = find_basename();
+	say STDERR "$basename version $VERSION";
+	exit(shift) if @_;
+}
+
+
+sub get_env_default ($;$) {
+	my ($basevar, $def_val) = @_;
+
+	my $var = ENV_SCOPE . $basevar;
+	return $ENV{$var} if defined($ENV{$var}) && length($ENV{$var});
+	return $def_val;
+}
+
+sub write_file ($$) {
+	my ($name, $content) = @_;
+	open(my $fh, '>', $name) or die "opening $name: $!";
+	print $fh $content;
+	close($fh) or die "saving $name: $!"; # e.g. disk full
+}
+
+sub read_file ($;$) {
+	my ($file, $perlIO) = @_;
+	my ($fh, $data);
+
+	if ($perlIO && $perlIO !~ /^\s*:/) {
+		die "Bad PerlIO spec (should start with ':'): $perlIO";
+	}
+
+	open($fh, ($perlIO ? "< $perlIO" : '<'), $file) or die "reading $file: $!";
+	$data = <$fh>;
+	close($fh);
+	return $data;
+}
+
+sub check_system ($$) {
+	my ($context, $cmdref) = @_;
+	my $arg0 = $cmdref->[0];
+	system $arg0 @$cmdref;
+	die "$context: exit code " . ($? >> 8) if $?;
+}
+
+sub vbox ($$) {
+	unshift(@{ $_[1] }, 'VBoxManage');
+	goto &check_system;
+}
+
+
+sub build_config_iso ($$$) {
+	my ($tmpdir, $host, $keydata) = @_;
+	my $host8 = length($host) > 8 ? substr($host, 0, 8) : $host;
+	my $iso_basename = "$host-config.iso";
+
+	my ($ctr, $pid) = (5);
+	while (1) {
+		$pid = fork;
+		last if defined $pid;
+
+		warn "forking for chdir(): $!";
+		die "Too many failures to fork" if --$ctr <= 0;
+		sleep 5;
+	}
+
+	if ($pid) {
+		wait;
+		exit 10 if $?;
+
+	} else {
+		chdir($tmpdir) or die "cd $tmpdir: $!";
+
+		# Process a raw authorized_keys style file to YAML array.
+		#
+		# We have to be careful with newlines here, because otherwise power_state
+		# gets detached from the dictionary and cloud-init does nothing about it.)
+		#
+		# We also make sure to quote the key-data so arbitrary comments won't
+		# break the YAML.
+		my (@keylines, $yaml_keys, $delay);
+		$keydata =~ s/[\r\n]+$//;
+		@keylines = (split /[\r\n]+/, $keydata);
+		$yaml_keys = join("\n", map { s/'/''/g; "  - '$_'" } @keylines);
+
+		# Set an authorized key for next boot.
+		#
+		# power_state never has any effect on F20 (cloud-init 0.7.2), and I want
+		# to wait for resize2fs if the user expanded the image, so I put in the
+		# shutdown hack...
+		#
+		# Careful with the tabbing, this is YAML.
+		write_file 'user-data', <<USERDATA;
+#cloud-config
+ssh_authorized_keys:
+$yaml_keys
+runcmd:
+  - [ sh, '-c', 'nohup /sbin/shutdown -P +1 </dev/null >/dev/null 2>&1 &' ]
+USERDATA
+
+		write_file 'meta-data', <<METADATA;
+instance-id: i-$host8
+local-hostname: $host
+METADATA
+
+		exec(qw(xorriso -dev), $iso_basename,
+			qw(-joliet on -rockridge on -volid cidata -add user-data meta-data))
+			or die "xorriso: $!";
+	}
+
+	return catfile($tmpdir, $iso_basename);
+}
+
+
+sub unxz_image ($) {
+	my ($file) = @_;
+
+	my $base = $file;
+	$base =~ s/\.xz$//i;
+	die "Can't unarchive $file: expected output $base exists" if -e $base;
+
+	for my $cmd (@unarchivers) {
+		system($cmd, '-d', $file);
+		next if $?;
+
+		die "Unarchiver didn't produce expected name: $base" unless -f $base;
+		return $base;
+	}
+
+	die "No working unarchiver (any of: @unarchivers) for $file found.";
+}
+
+sub convert_to_vdi ($$) {
+	my ($raw, $vdi) = @_;
+
+	return $vdi;
+}
+
+sub build_vm ($$$) {
+	my ($cloud_img, $config_iso, $opts) = @_;
+	my ($vm_name, $tmpdir) = @{$opts}{qw(name tmpdir)};
+	my ($vdi, $os_type);
+
+	# check for "stdin" all-lowercase with optional any-case ".xz" suffix...
+	if ($cloud_img =~ /^stdin(?i-msx:\.xz)?$/) {
+		die "Disk image named 'stdin' will confuse VBox";
+	}
+
+	# decompress the image if it appears to be compressed
+	if ($cloud_img =~ /\.xz$/i) {
+		say "Decompressing cloud image...";
+		$cloud_img = unxz_image($cloud_img);
+	}
+	$cloud_img = abs_path($cloud_img);
+
+	# (re)convert the raw image to VDI
+	$vdi = basename($cloud_img);
+	$vdi =~ s/\.raw\b/.vdi/i or $vdi .= '.vdi';
+	$vdi = catfile($tmpdir, $vdi);
+	vbox("Convert $cloud_img -> $vdi",
+		[ 'convertfromraw', $cloud_img, $vdi, qw(--format VDI) ]);
+	$_exit->{zombie_vdi} = $vdi;
+
+	# 1000 = basic sanity check that we have MB not GB.
+	if ($options->{imagesize} && $options->{imagesize} > 1000) {
+		vbox("Expanding VDI to image size ($options->{imagesize})",
+			[ 'modifyhd', $vdi, '--resize', $options->{imagesize} ]);
+	}
+
+	# create VM description and register it with VBox
+	$vm_name .= '_' . substr(sha1_hex($$ . time() . rand()), 0, 16);
+	$os_type = VBOX_OS_TYPE;
+	$os_type .= '_64' unless $opts->{'32bit'};
+	vbox("Creating $os_type VM $vm_name",
+			[ qw(createvm --register --name), $vm_name, '--ostype', $os_type ]);
+
+	# Settings:
+	# * Enough RAM to avoid OOM issue seen at 512 MB (no swap on the image)
+	# * Hardware clock in UTC (inexplicably NOT set correctly by --ostype)
+	# * Disable unnecessary USB / Audio busses
+	vbox("Setting basic VM settings",
+		[ 'modifyvm', $vm_name, qw(--memory 768 --vram 16 --rtcuseutc on
+			--mouse ps2 --keyboard ps2 --usb off --audio none) ]);
+	# allow access to the guest SSH
+	vbox("Forwarding SSH port",
+		[ 'modifyvm', $vm_name, qw(--nic1 nat),
+			'--natpf1', "ssh,tcp,127.0.0.1,$opts->{sshport},,22" ]);
+
+	# build a controller and connect our storage to it (all SATA/AHCI)
+	vbox("Adding SATA controller",
+		[ 'storagectl', $vm_name, qw(--name SATA
+			--add sata --controller IntelAhci
+			--portcount 4 --hostiocache off --bootable on) ]);
+	vbox("Attaching disk $vdi",
+		[ 'storageattach', $vm_name, qw(--storagectl SATA
+			--port 0 --type hdd --medium), $vdi ]);
+	$_exit->{zombie_vdi} = undef;
+	vbox("Attaching config ISO $config_iso",
+		[ 'storageattach', $vm_name, qw(--storagectl SATA
+			--port 3 --type dvddrive --medium), $config_iso ]);
+
+	# It turns out VBox can fail and return exit code zero.
+	# We'd better make sure it's plausible that the VM booted.
+	my $bootstart = time;
+	check_system("Booting VM $vm_name",
+		[ qw(VBoxHeadless -s), $vm_name ]);
+	my $bootdelta = time() - $bootstart;
+
+	# Approximately "the amount of time vbox spends on the pre-boot screen",
+	# so that even if the cloud image gets near-instant, this stays accurate.
+	if ($bootdelta < 2.0) {
+		die sprintf('Improbably fast boot cycle: %.2f sec.', $bootdelta);
+	}
+
+	return $vm_name;
+}
+
+
+sub export_vm ($$$) {
+	my ($objdir, $hostname, $vm_name) = @_;
+	my $file = catfile($objdir, "$hostname.ova");
+	vbox("Exporting $vm_name -> $file",
+		[ 'export', $vm_name, '--output', $file ]);
+	return $file;
+}
+
+
+sub cleanup_vm ($) {
+	my ($vm_name) = @_;
+	vbox("Deleting $vm_name", [ 'unregistervm', '--delete', $vm_name ]);
+}
+
+sub crash_cleanup () {
+	return if $_exit->{pid} != $$;
+
+	if ($_exit->{zombie_vdi}) {
+		vbox("Deregister zombie VDI $_exit->{zombie_vdi}",
+			[ 'closemedium', $_exit->{zombie_vdi} ]);
+	}
+}
+END {
+	crash_cleanup
+}
+
+
+$options = {
+	help => 0,
+	version => 0,
+
+	'32bit' => get_env_default('32BIT', 0),
+	imagesize => get_env_default('IMAGESIZE'),
+	name => get_env_default('NAME', 'fedora'),
+	objdir => get_env_default('OBJDIR', tmpdir()),
+	pubkey => get_env_default('PUBKEY'),
+	sshport => get_env_default('SSHPORT', 18222),
+	tmpdir => get_env_default('TMPDIR'),
+};
+
+GetOptions($options, qw(
+	32bit!
+	help
+	imagesize|imgsize|resize|s=i
+	name|n=s
+	objdir|outdir|o=s
+	pubkey|k=s
+	sshport|p=i
+	tmpdir|t=s
+	version
+));
+
+if ($options->{help}) {
+	usage(0);
+} elsif ($options->{version}) {
+	version(0);
+} elsif (! defined($options->{pubkey})) {
+	usage(2, 'Public key must be provided with $'.ENV_SCOPE.
+		'PUBKEY or --pubkey/-k flag');
+} elsif (length($options->{pubkey}) < 1) {
+	usage(2, 'Public key path must not be empty');
+} elsif (length($options->{name}) < 1) {
+	usage(3, 'Name must not be empty');
+}
+
+if (! @ARGV) {
+	usage(4, 'No path specified to Fedora Cloud disk image');
+} elsif (! -f $ARGV[0]) {
+	usage(4, "Fedora Cloud image does not exist: $ARGV[0]");
+} elsif (! -r _) {
+	usage(4, "Fedora Cloud image not readable: $ARGV[0]");
+}
+
+my $keydata = read_file($options->{pubkey});
+if (! $keydata) {
+	# This is all the sanity checking I want to maintain on this.
+	usage(2, 'Public key file found, but empty: '.$options->{pubkey});
+}
+
+if (-e "$options->{name}.ova") {
+	usage(5, "$options->{name}.ova exists; please move/delete it first");
+}
+
+$options->{objdir} = abs_path($options->{objdir});
+unless (-d $options->{objdir}) {
+	make_path($options->{objdir}) or die "Can't create objdir $options->{objdir}: $!";
+}
+
+if (! defined($options->{tmpdir})) {
+	$options->{tmpdir} = tempdir(CLEANUP => 1);
+} else {
+	$options->{tmpdir} = abs_path($options->{tmpdir});
+}
+
+
+if ($options->{sshport} && ($options->{sshport} < 1024 || $options->{sshport} > 65535)) {
+	die "SSH port should be between 1024 and 65535: $options->{sshport}";
+}
+
+# build pipeline
+my $config_iso = build_config_iso($options->{tmpdir}, $options->{name}, $keydata);
+my $vm_id = build_vm($ARGV[0], $config_iso, $options);
+my $ova_file = export_vm($options->{objdir}, $options->{name}, $vm_id);
+if (-f $ova_file) {
+	say "Completed: $ova_file";
+	cleanup_vm($vm_id);
+} else {
+	say STDERR "Seemed OK, but failed to create: $ova_file";
+}
+
+__END__
+
+=head1 NAME
+
+fedora2ova - build an OVA from a Fedora Cloud raw disk image
+
+=head1 SYNOPSIS
+
+fedora2ova -k ~/.ssh/id_rsa.pub [options] fedora-cloud-image[.xz]
+
+=head1 DESCRIPTION
+
+Loads a Fedora Cloud raw disk image (as downloaded from Fedora itself),
+installs an SSH key, and packages the resulting machine into an OVA archive
+for use with L<Packer.io|http://www.packer.io/>.
+
+If the image is compressed, it will be decompressed in-place and left there.
+
+=head1 OPTIONS
+
+=over 4
+
+=item --help
+
+Displays usage information.
+
+=item --version
+
+Displays version information.
+
+=item --32bit / --no-32bit
+
+Creates the machine as a 32-bit (or explicitly resets to 64-bit) hardware
+type.  64-bit is default.
+
+=item --imagesize SIZE (--imgsize / --resize / -s)
+
+Resize the hard drive from its actual size (2 GiB at time of writing) to an
+expanded size.  The C<SIZE> parameter is an integer, representing the number
+of B<megabytes>.  A desired size of 8 GiB would be represented as
+C<--imagesize 8192>.
+
+The filesystem is not expanded by B<fedora2ova>.  That must be done when
+provisioning the output OVA.
+
+=item --name NAME (-n)
+
+Base name of the VirtualBox guest system name.  Default I<fedora>.  A unique
+hash is appended to this name to prevent name collisions.
+
+=item --objdir DIR (--outdir / -o)
+
+Directory to write final OVA to.  Defaults to the system temporary directory.
+
+=item --pubkey FILE (-k)
+
+Use FILE as the SSH public key to authorize for access to the instance.
+
+=item --sshport PORT (-p)
+
+Use the given PORT as listening port on the host to forward to the guest's SSH
+daemon.
+
+It is believed that this option is irrelevant and unnecessary, and
+B<it may be removed without warning> in the future.
+
+=item --tmpdir DIR (-t)
+
+Directory to write temporary files (VDI disk image and config ISO) into.
+Defaults to a newly-created temporary directory that is automatically deleted
+when the program exits.
+
+=back
+
+=head1 ENVIRONMENT
+
+All options may also be provided by their main name, uppercased, and appended
+to C<FEDORAPACK_> - such as C<FEDORAPACK_OBJDIR> to set C<--objdir>.
+
+Default output and temporary directories may be influenced by an OS-specific
+temporary directory variable.
+
+=head1 FILES
+
+=over 4
+
+=item Fedora Image Directory
+
+If the raw image is XZ-compressed, it will be decompressed (by the system
+C<xz> utilities, or a parallel variant if found) and stored in the same
+directory.
+
+This effect is permanent: the raw image remains decompressed after
+B<fedora2ova> has run.
+
+=item Output Directory (--objdir)
+
+Directory in which the final OVA is written.
+
+Defaults to the system's temporary directory, e.g. /tmp.
+
+=item Temporary Directory (--tmpdir)
+
+Directory in which the VDI image and config ISO are written.
+
+Defaults to a private temporary directory, cleaned up at program exit,
+presumably within the system's temporary directory.  E.g. /tmp/SrCD2eb9.
+
+=back
+
+=head1 REQUIREMENTS
+
+=over 4
+
+=item Perl 5.10.0 core
+
+=item VBoxManage and VBoxHeadless commands
+
+=item GNU xorriso command
+
+Available in Homebrew on OS X.
+
+=item XZ unarchiver: pixz, pxz, or xz
+
+Only needed if Fedora Cloud images are compressed.  Any other archiver may be
+used in advance to unpack the C<.raw.xz> instead.
+
+=back
+
+=head1 BUGS
+
+This is, by design, extremely specific to Fedora Cloud spins.  It's less
+specific to host OS, although you'll probably have the best time with it on OS
+X, Linux, or BSD systems.
+
+All bugs that can be reproduced on up-to-date Fedora Cloud releases should be
+reported to I<devel at sapphirepaw.org>.  Please include B<fedora2ova> in your
+subject line.
+
+=head1 AUTHOR
+
+Sapphire Cat L<https://github.com/sapphirecat>
+
+=cut
+
