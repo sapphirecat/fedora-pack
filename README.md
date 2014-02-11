@@ -8,11 +8,11 @@ full-fleged OVA export.
 
 # Example Usage
 
-    fedora2ova --pubkey ~/.ssh/aws.pub --name fc20 Fedora20-Cloud.raw.xz
+    ./bin/fedora2ova -k ~/.ssh/aws.pub -n f20 Fedora-x86_64-20.raw.xz
 
-This takes all the steps needed to build a VM whose name starts with `fc20`
+This takes all the steps needed to build a VM whose name starts with `f20`
 and whose main user (`fedora`, in this case) is accessible with the given SSH
-key.  The VM will be exported as `fc20.ova` for use with Packer's VirtualBox
+key.  The VM will be exported as `f20.ova` for use with Packer's VirtualBox
 builder.
 
 
