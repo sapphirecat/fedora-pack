@@ -12,8 +12,19 @@ full-fleged OVA export.
 
 This takes all the steps needed to build a VM whose name starts with `f20`
 and whose main user (`fedora`, in this case) is accessible with the given SSH
-key.  The VM will be exported as `f20.ova` for use with Packer's VirtualBox
-builder.
+key.  The VM will be exported to your system’s temporary directory—typically
+/tmp—as `f20.ova` for use with Packer's VirtualBox builder.
+
+You can also specify the temp dir, used for intermediate files, with `-t DIR`
+and the output directory with `-o DIR`.  Without `-t`, a temporary directory
+is created and destroyed automatically; the tmpdir is preserved when `-t` is
+used.
+
+`fedora2ova` assumes it is using the 64-bit image by default; you may instead
+create a 32-bit guest by adding the `--32bit` flag.
+
+More options may be available.  Check `fedora2ova --help` or `perldoc
+fedora2ova` for more details.
 
 
 # Dependencies
