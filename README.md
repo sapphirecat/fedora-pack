@@ -1,6 +1,7 @@
 # Synopsis
 
-The Fedora Cloud image isn't [Packer](http://www.packer.io/)-ready out of the
+The [Fedora Cloud image](https://fedoraproject.org/en/get-fedora#clouds)
+isn't [Packer](http://www.packer.io/)-ready out of the
 box.  fedora-pack takes care of turning that compressed, raw disk image into a
 full-fleged OVA export.
 
