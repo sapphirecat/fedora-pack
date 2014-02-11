@@ -34,7 +34,7 @@ use Time::HiRes qw(time);
 use constant ENV_SCOPE => 'FEDORAPACK_';
 use constant VBOX_OS_TYPE => 'Fedora';
 
-our $VERSION = '0.5.0'; # SemVer
+our $VERSION = '0.5.1'; # SemVer
 
 my $options; # hashref, assigned near GetOptions call
 my @unarchivers = qw(xz pxz pixz);
@@ -339,7 +339,7 @@ $options = {
 	'32bit' => get_env_default('32BIT', 0),
 	imagesize => get_env_default('IMAGESIZE'),
 	name => get_env_default('NAME', 'fedora'),
-	objdir => get_env_default('OBJDIR', tmpdir()),
+	objdir => get_env_default('OBJDIR', '.'),
 	pubkey => get_env_default('PUBKEY'),
 	sshport => get_env_default('SSHPORT', 18222),
 	tmpdir => get_env_default('TMPDIR'),
@@ -514,7 +514,7 @@ B<fedora2ova> has run.
 
 Directory in which the final OVA is written.
 
-Defaults to the system's temporary directory, e.g. /tmp.
+Defaults to the current directory.
 
 =item Temporary Directory (--tmpdir)
 
