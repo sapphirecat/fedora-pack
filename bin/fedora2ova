@@ -468,7 +468,7 @@ hash is appended to this name to prevent name collisions.
 
 =item --objdir DIR (--outdir / -o)
 
-Directory to write final OVA to.  Defaults to the system temporary directory.
+Directory to write final OVA to.  Defaults to the current directory.
 
 =item --pubkey FILE (-k)
 
