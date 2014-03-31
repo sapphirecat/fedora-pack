@@ -22,6 +22,8 @@ use 5.010;
 use strict;
 use warnings;
 
+our $VERSION = '0.6.0'; # SemVer
+
 # Fedora versions handled by this script's runner classes
 our $MIN_KNOWN_VERSION = 20;
 our $MAX_KNOWN_VERSION = 20;
@@ -346,14 +348,26 @@ use List::Util qw(max);
 # - python3-pip virtualenv
 
 
+sub get_help_basename () {
+	return basename($0);
+}
+
+sub version () {
+	my $base = get_help_basename();
+	print "$base version $VERSION\n";
+	exit 0;
+}
+
 sub usage (;$$) {
-	my ($msg, $code) = @_;
-	my $base = basename($0);
-	$code //= 2;
+	my ($code, $msg) = @_;
+	my $base = get_help_basename();
 
 	if ($msg) {
 		select STDERR;
 		print "Error: ", $msg, "\n\n" if $msg;
+		$code //= 2;
+	} else {
+		$code //= 0;
 	}
 
 	print <<USAGE;
@@ -439,6 +453,8 @@ $options = {
 	output => 'provisioner.sh',
 };
 @getopt_spec = (
+	'help',
+	'version',
 	'output:s'
 );
 for my $version ($MIN_KNOWN_VERSION..$MAX_KNOWN_VERSION) {
@@ -454,13 +470,17 @@ GetOptions($options, @getopt_spec);
 undef @getopt_spec;
 
 
+usage(0) if $options->{help};
+version() if $options->{version};
+
+
 # get/check bundle path
 if (! @ARGV) {
-	usage("A path to bundle must be specified.");
+	usage(2, "A path to bundle must be specified.");
 } elsif (@ARGV > 1) {
-	usage("Only one path to bundle is supported.");
+	usage(2, "Only one path to bundle is supported.");
 } elsif (! -d $ARGV[0]) {
-	usage("Path to bundle is not a directory.");
+	usage(2, "Path to bundle is not a directory.");
 } else {
 	$bundle_root = abs_path($ARGV[0]);
 }
@@ -478,11 +498,11 @@ for my $language (keys %LANGUAGES) {
 # get fedora version arg, or default to latest
 my @iso_version = map { /^fedora(\d+)$/ ? ($1) : () } keys %$options;
 if (@iso_version > 1) {
-	usage("Only one Fedora version can be used.");
+	usage(3, "Only one Fedora version can be used.");
 } elsif (! @iso_version) {
 	# check if Getopt left behind a --fedora2 arg or something
 	my @bad_versions = grep { /^--fedora\d+/ } @ARGV;
-	usage("Unknown Fedora version requested: @bad_versions") if @bad_versions;
+	usage(3, "Unknown Fedora version requested: @bad_versions") if @bad_versions;
 
 	# no version specified at all, safe to default it.
 	@iso_version = ($MAX_KNOWN_VERSION);
@@ -490,11 +510,11 @@ if (@iso_version > 1) {
 
 # check languages/scripts
 if (! @bundle_langs) {
-	usage("No languages were specified to bundle.");
+	usage(4, "No languages were specified to bundle.");
 } elsif (! @scripts) {
-	usage("No runner script for any language was provided.");
+	usage(4, "No runner script for any language was provided.");
 } elsif (@scripts > 1) {
-	usage("Only one runner script is supported.");
+	usage(4, "Only one runner script is supported.");
 }
 
 
@@ -502,7 +522,7 @@ if (! @bundle_langs) {
 # check that the runner is inside the bundle tree (and exists)
 # and further, rework the runner to be relative to the bundle root
 my $script_rel_path = eval { resolve_script($bundle_root, $scripts[0][1]) };
-usage($@ || "Could not resolve script relative to bundle dir") unless $script_rel_path;
+usage(5, $@ || "Could not resolve script relative to bundle dir") unless $script_rel_path;
 
 # get a runner for the script and check that it accepts the path
 my $primary_runner = runner_for_lang($scripts[0][0],
