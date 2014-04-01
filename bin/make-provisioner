@@ -22,7 +22,7 @@ use 5.010;
 use strict;
 use warnings;
 
-our $VERSION = '0.6.0'; # SemVer
+our $VERSION = '0.6.1'; # SemVer
 
 # Fedora versions handled by this script's runner classes
 our $MIN_KNOWN_VERSION = 20;
@@ -462,7 +462,7 @@ for my $version ($MIN_KNOWN_VERSION..$MAX_KNOWN_VERSION) {
 	push(@getopt_spec, "fedora$version");
 }
 for my $language (keys %LANGUAGES) {
-	$options->{$language} = 0;
+	$options->{$language} = undef;
 	push(@getopt_spec, "$language:s");
 }
 
@@ -487,10 +487,11 @@ if (! @ARGV) {
 
 # gather requested languages and runner scripts
 for my $language (keys %LANGUAGES) {
-	next unless $options->{$language};
+	# secondary languages set to ''
+	next unless defined $options->{$language};
 	push(@bundle_langs, $language);
 	my $lang_arg = $options->{$language};
-	if ($lang_arg ne '1' && -e catfile($bundle_root, $options->{$language})) {
+	if ($lang_arg ne '' && -e catfile($bundle_root, $options->{$language})) {
 		push(@scripts, [$language, $lang_arg]);
 	}
 }
