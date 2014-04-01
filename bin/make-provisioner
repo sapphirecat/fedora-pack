@@ -314,14 +314,13 @@ sub get_install_packages {
 package main;
 
 use Archive::Tar ();
-use Archive::Tar::Constant qw(FILE SYMLINK);
+use Archive::Tar::Constant qw(SYMLINK);
 use Cwd qw(abs_path);
 use File::Basename qw(basename dirname);
 use File::Find qw(find);
 use File::Spec::Functions qw(catfile abs2rel file_name_is_absolute);
 use Getopt::Long qw(GetOptions);
 use IO::Compress::Gzip ();
-use List::Util qw(max);
 
 # There's a stage1 script in the DATA filehandle that the Runner::X classes
 # fill out.  The main script knows what languages exist because it defined
