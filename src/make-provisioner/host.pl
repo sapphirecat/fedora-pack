@@ -241,7 +241,10 @@ sub get_install_packages {
 }
 
 sub get_post_install_script {
-	return 'curl -LSs https://getcomposer.org/installer | php -- - --install-dir=/usr/bin';
+	return <<INSTALL;
+curl -LSs https://getcomposer.org/installer | php
+sudo install -m 0755 -o root -g root composer.phar /usr/bin/composer
+INSTALL
 }
 
 package Runner::pear;

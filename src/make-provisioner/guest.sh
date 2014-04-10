@@ -10,10 +10,10 @@ if [ "$cut_line" -le 1 ] ; then
 	exit 1
 fi
 
+cd `mktemp -d -t fedorapack.XXXXXXXX`
 yum -q -y install @PACKAGES@
 @POST_SH@
 
-cd `mktemp -d -t fedorapack.XXXXXXXX`
 tail -n +$cut_line "$self_file" | tar zxf -
 cd @TAR_TOPDIR@
 exec @RUNNER@ `pwd`
