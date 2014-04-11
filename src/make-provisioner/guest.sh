@@ -15,8 +15,9 @@ fi
 [ "$(echo "$self_file" | cut -c1)" == / ] || \
 	self_file="$(pwd -P)/$self_file"
 
-# exec payloads in tmpdir
-cd `mktemp -d -t fedorapack.XXXXXXXX`
+# exec payloads in workdir
+sudo install -d -m 0700 -o `id -un` -g `id -gn` /var/local/fedora-pack
+cd /var/local/fedora-pack
 sudo yum -q -y install @PACKAGES@
 @POST_SH@
 
