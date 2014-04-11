@@ -2,6 +2,7 @@
 [ -z $FEDORAPACK_DEBUG ] || set -x
 set -e
 
+# find ourselves
 self_file="$0"
 [ -e "$self_file" ] || self_file="$(which "$self_file")"
 cut_line=$(( `grep -an '^#END_STAGE1$' "$self_file" | cut -d: -f1` + 1 ))
@@ -10,6 +11,11 @@ if [ "$cut_line" -le 1 ] ; then
 	exit 1
 fi
 
+# make absolute
+[ "$(echo "$self_file" | cut -c1)" == / ] || \
+	self_file="$(pwd -P)/$self_file"
+
+# exec payloads in tmpdir
 cd `mktemp -d -t fedorapack.XXXXXXXX`
 sudo yum -q -y install @PACKAGES@
 @POST_SH@
