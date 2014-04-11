@@ -580,6 +580,8 @@ my $add_tar_file = sub {
 	if (-l $_) {
 		$tar->add_data($tar_name, readlink $_, { type => SYMLINK })
 			or warn "Adding symlink $_: ".$tar->error;
+	} elsif (-z _) {
+		$tar->add_data($tar_name, '', { size => 0 });
 	} elsif (open($fh, '<:raw', $_)) {
 		$tar->add_data($tar_name, <$fh>)
 			or die "Adding file $rel_file ($_): ".$tar->error;
