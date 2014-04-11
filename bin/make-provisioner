@@ -579,15 +579,15 @@ my $add_tar_file = sub {
 	my $tar_name = catfile($TAR_TOPLEVEL_DIR, $rel_file);
 	if (-l $_) {
 		$tar->add_data($tar_name, readlink $_, { type => SYMLINK })
-			or warn "Adding symlink $_: ".$tar->error;
+			or warn "Adding symlink $_ to provisioner: ".$tar->error;
 	} elsif (-z _) {
 		$tar->add_data($tar_name, '', { size => 0 });
 	} elsif (open($fh, '<:raw', $_)) {
 		$tar->add_data($tar_name, <$fh>)
-			or die "Adding file $rel_file ($_): ".$tar->error;
+			or die "Adding file $rel_file to provisioner: ".$tar->error;
 		close $fh;
 	} else {
-		warn "skipping $_ due to open error: $!";
+		warn "skipping adding $_ to provisioner due to open error: $!";
 	}
 };
 find({ wanted => $add_tar_file, no_chdir => 1 }, $bundle_root);
