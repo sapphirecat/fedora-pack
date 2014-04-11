@@ -228,7 +228,7 @@ sub get_install_packages {
 }
 
 sub get_post_install_script {
-	return 'cpanm Carton';
+	return 'cpanm -S Carton';
 }
 
 
@@ -301,7 +301,7 @@ sub get_install_packages {
 }
 
 sub get_post_install_script {
-	return 'python3-pip install virtualenv';
+	return 'sudo python3-pip install virtualenv';
 }
 
 
@@ -620,7 +620,7 @@ if [ "$cut_line" -le 1 ] ; then
 fi
 
 cd `mktemp -d -t fedorapack.XXXXXXXX`
-yum -q -y install @PACKAGES@
+sudo yum -q -y install @PACKAGES@
 @POST_SH@
 
 tail -n +$cut_line "$self_file" | tar zxf -

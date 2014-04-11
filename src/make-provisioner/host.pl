@@ -228,7 +228,7 @@ sub get_install_packages {
 }
 
 sub get_post_install_script {
-	return 'cpanm Carton';
+	return 'cpanm -S Carton';
 }
 
 
@@ -301,7 +301,7 @@ sub get_install_packages {
 }
 
 sub get_post_install_script {
-	return 'python3-pip install virtualenv';
+	return 'sudo python3-pip install virtualenv';
 }
 
 

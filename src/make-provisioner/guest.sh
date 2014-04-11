@@ -11,7 +11,7 @@ if [ "$cut_line" -le 1 ] ; then
 fi
 
 cd `mktemp -d -t fedorapack.XXXXXXXX`
-yum -q -y install @PACKAGES@
+sudo yum -q -y install @PACKAGES@
 @POST_SH@
 
 tail -n +$cut_line "$self_file" | tar zxf -
