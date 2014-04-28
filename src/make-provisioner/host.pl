@@ -22,7 +22,7 @@ use 5.010;
 use strict;
 use warnings;
 
-our $VERSION = '0.6.1'; # SemVer
+our $VERSION = '0.6.2'; # SemVer
 
 # Fedora versions handled by this script's runner classes
 our $MIN_KNOWN_VERSION = 20;
@@ -298,10 +298,6 @@ __PACKAGE__->_register;
 
 sub get_install_packages {
 	return qw(python3 python3-pip);
-}
-
-sub get_post_install_script {
-	return 'sudo python3-pip install virtualenv';
 }
 
 
