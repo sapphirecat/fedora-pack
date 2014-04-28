@@ -22,7 +22,7 @@ use 5.010;
 use strict;
 use warnings;
 
-our $VERSION = '0.6.2'; # SemVer
+our $VERSION = '0.6.3'; # SemVer
 
 # Fedora versions handled by this script's runner classes
 our $MIN_KNOWN_VERSION = 20;
@@ -49,7 +49,7 @@ our $TAR_TOPLEVEL_DIR = 'pack';
 # - package main, that gets information from the runners and builds the
 #   bundle.  (Runners are invoked guest-side to do the _actual_ instance
 #   customization; the provisioner built here only installs the language, and
-#   desirable dependency/build tools such as bundler and rake for Ruby.)
+#   desirable dependency/build tools such as carton for Perl.)
 
 
 
@@ -298,15 +298,6 @@ __PACKAGE__->_register;
 
 sub get_install_packages {
 	return qw(python3 python3-pip);
-}
-
-
-package Runner::ruby;
-use base 'Runner';
-__PACKAGE__->_register;
-
-sub get_install_packages {
-	return qw(ruby rubygem-bundler rubygem-bundler_ext rubygem-rake);
 }
 
 
