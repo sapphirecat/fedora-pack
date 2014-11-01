@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 [ -z $FEDORAPACK_DEBUG ] || set -x
 set -e
 
@@ -18,8 +18,7 @@ fi
 # exec payloads in workdir
 sudo install -d -m 0700 -o `id -un` -g `id -gn` /var/local/fedora-pack
 cd /var/local/fedora-pack
-sudo yum -q -y install @PACKAGES@
-@POST_SH@
+@PACKAGE_SCRIPT@
 
 tail -n +$cut_line "$self_file" | tar zxf -
 cd @TAR_TOPDIR@
