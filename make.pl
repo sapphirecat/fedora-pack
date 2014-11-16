@@ -97,8 +97,8 @@ sub insert_module {
 	# trying to load this one from the standard path.
 	$stream->print(<<INCLUDE_HACK);
 	BEGIN {
-		my \$mod_tail = File::Spec->catfile(split(/::/, "$mod.pm"));
-		\$::INC{\$mod_tail} = File::Spec->catfile(\$FindBin::Bin, \$mod_tail);
+		my \$mod_tail = join('/', split(/::/, "$mod.pm"));
+		\$::INC{\$mod_tail} = \$0;
 	}
 INCLUDE_HACK
 
@@ -114,7 +114,6 @@ sub stream_modules {
 	open(my $scriptfh, '<:utf8', $scriptname) or die "opening $scriptname to merge modules: $^E";
 	while (my $ln = <$scriptfh>) {
 		if ($ln =~ /^#INSERT_PACKAGES#/) {
-			$stream->print("BEGIN { require File::Spec; }");
 			insert_module($stream, $_) for @$modlist;
 		} else {
 			$stream->print($ln);

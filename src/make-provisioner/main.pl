@@ -32,18 +32,18 @@ use FindBin ();
 	package main;
 
 	BEGIN {
-		if (! exists($INC{'cli.pm'})) {
+		if (! exists($INC{'App/FedoraPack/cli.pm'})) {
 			# TODO: recursively enumerate *.pm modules in BFS under $FB::Bin and use
 			# them all, instead of hardcoding the leaves
 			eval <<EVAL;
 			use lib \$FindBin::Bin;
-			use cli;
-			use System::Ubuntu;
-			use System::AmazonLinux;
+			use App::FedoraPack::cli;
+			use App::FedoraPack::System::Ubuntu;
+			use App::FedoraPack::System::AmazonLinux;
 EVAL
 		}
 	}
 
-	cli::main();
+	App::FedoraPack::cli::main();
 }
 

@@ -1,11 +1,11 @@
-package System::Ubuntu;
+package App::FedoraPack::System::Ubuntu;
 
 use 5.010;
 use mro 'c3';
 use strict;
 use warnings;
 
-use base qw(System::Debian);
+use base qw(App::FedoraPack::System::Debian);
 __PACKAGE__->register('ubuntu', [ qw(14.04 trusty 14.10 utopic) ]);
 
 sub new {

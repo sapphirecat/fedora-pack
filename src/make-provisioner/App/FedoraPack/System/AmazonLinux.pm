@@ -1,11 +1,11 @@
-package System::AmazonLinux;
+package App::FedoraPack::System::AmazonLinux;
 
 use 5.010;
 use mro 'c3';
 use strict;
 use warnings;
 
-use base qw(System::Fedora);
+use base qw(App::FedoraPack::System::Fedora);
 __PACKAGE__->register('amazon', [ qw(2014.09) ]);
 __PACKAGE__->register_feature('epel', 'enable_epel');
 

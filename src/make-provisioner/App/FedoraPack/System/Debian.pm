@@ -1,11 +1,11 @@
-package System::Debian;
+package App::FedoraPack::System::Debian;
 
 use 5.010;
 use mro 'c3';
 use strict;
 use warnings;
 
-use base qw(System);
+use base qw(App::FedoraPack::System);
 __PACKAGE__->register('debian', [ qw(7 wheezy 8 jessie) ]);
 
 

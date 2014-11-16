@@ -1,11 +1,11 @@
-package System::Fedora;
+package App::FedoraPack::System::Fedora;
 
 use 5.010;
 use mro 'c3';
 use strict;
 use warnings;
 
-use base qw(System);
+use base qw(App::FedoraPack::System);
 __PACKAGE__->register('fedora', [ qw(20 21) ]);
 
 sub _provides_perl {
