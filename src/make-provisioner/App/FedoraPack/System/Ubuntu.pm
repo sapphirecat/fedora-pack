@@ -16,8 +16,8 @@ sub new {
 
 	# normalize version
 	if ($self->{version} !~ /^[.\d]+$/) {
-		$self->{version} = 14.04 if $self->{version} eq 'trusty';
-		$self->{version} = 14.10 if $self->{version} eq 'utopic';
+		$self->{version} = '14.04' if $self->{version} eq 'trusty';
+		$self->{version} = '14.10' if $self->{version} eq 'utopic';
 	}
 
 	if ($self->{version} !~ /^\d{2}\.\d{2}$/) {
