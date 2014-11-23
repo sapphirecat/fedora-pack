@@ -44,6 +44,6 @@ EVAL
 		}
 	}
 
-	App::FedoraPack::cli::main();
+	App::FedoraPack::cli->main(\@ARGV);
 }
 

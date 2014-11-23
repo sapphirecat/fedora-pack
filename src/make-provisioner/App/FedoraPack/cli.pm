@@ -67,9 +67,8 @@ sub parse_sysver {
 	($sys, $sysver) = ($s, $v);
 }
 
-
 sub parse_cmdline {
-	my ($argv) = @_;
+	my ($argv, $out_fh_ref) = @_;
 	my (@features, @scripts);
 
 	# We want dynamic options (--system-f is valid if System::F is loadable), so
@@ -102,6 +101,12 @@ sub parse_cmdline {
 		usage() if /^help$/i || $_ eq '?';
 		version() if /^version$/;
 		parse_sysver($1, $arg), next if /^system-([a-z0-9]+)$/;
+		if (/^save-as$/) {
+			return udie "--save-as requires an argument" unless defined $arg;
+			open(my $ofh, '>:raw', $arg) or die "Can't open save-as file $arg: $^E";
+			$$out_fh_ref = $ofh;
+			next;
+		}
 		if (/^exec$/) {
 			return udie "--exec requires an argument" unless defined $arg;
 			push(@scripts, $arg);
@@ -153,7 +158,9 @@ sub parse_cmdline {
 
 
 sub main {
-	my $sys = parse_cmdline(\@::ARGV);
+	my ($self, $argv) = @_;
+	my $out_fh = \*STDOUT;
+	my $sys = $self->parse_cmdline($argv, \$out_fh);
 	die "Command line parsed OK, but the rest is yet to come.\n";
 	#$sys->something();
 }
