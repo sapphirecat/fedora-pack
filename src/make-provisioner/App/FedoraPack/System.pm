@@ -161,9 +161,9 @@ sub splitpath_and_dirs {
 
 	my ($vol, $path, $file) = splitpath($thing, $no_file);
 	my (@dirs) = splitdir($path);
-	# and for some reason, File::Spec leaves one trailing separator on $path, so
-	# splitdir returns us one bogus trailing entry.
-	pop(@dirs) unless defined $dirs[$#dirs];
+	# splitpath doesn't yield clean paths, confusing splitdir... drop any
+	# `undef` entries from the resulting array
+	@dirs = map { $_ // () } @dirs;
 
 	return ($vol, [ @dirs ], $file);
 }
@@ -215,8 +215,8 @@ sub cmdline_for_script {
 	my ($lang, $script, $root_dir) = @_;
 	my ($basedir, $bin);
 
-	my ($vol, $dirs, $file) = $self->splitpath_and_dirs($root_dir);
-	$basedir = pop @$dirs;
+	my ($vol, $dirs, $file) = $self->splitpath_and_dirs($root_dir, 1);
+	$basedir = scalar @$dirs ? pop @$dirs : 'NO_DIRS_WTF';
 	($vol, $dirs, $file) = $self->splitpath_and_dirs($script);
 
 	$bin = $self->{binaries}{$lang};
@@ -262,8 +262,15 @@ sub make_install {
 		@{ $self->{pre_scripts} },
 		$self->make_install_cmd($self->{packages}),
 		@{ $self->{scripts} },
-		"\n"
 	);
+}
+
+sub get_target_dirs {
+	$_[0]->{targets};
+}
+
+sub get_target_script_cmds {
+	$_[0]->{target_scripts};
 }
 
 # Given a (name, version_provided, version_wanted, package_list_aref), checks

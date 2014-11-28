@@ -33,9 +33,13 @@ sub make_install_cmd {
 	my ($self, $pkgset) = @_;
 	return join("\n",
 		'export DEBIAN_FRONTEND=noninteractive',
+		# Ubuntu doesn't keep security updates at time T on mirrors forever, so if
+		# we have an AMI built at T, and ask to install stuff, it may not be
+		# possible (without this update) if a stale security update is the latest
+		# in the local cache.  (This actually did happen to me once.)
 		'sudo apt-get -q -y update',
 		# install through aptitude so we can use -R (--without-recommends)
-		'sudo apt-get -q -y install aptitude',
+		'command -v aptitude >/dev/null 2>&1 || sudo apt-get -q -y install aptitude',
 		"sudo aptitude -q -y -R install @$pkgset",
 	);
 }

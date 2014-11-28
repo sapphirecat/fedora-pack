@@ -2,7 +2,7 @@
 
 # https://github.com/sapphirecat/fedora-pack
 #
-# Self-extracting Packer shell provisioners for Fedora Cloud
+# Self-extracting Packer shell provisioners for Linux
 # Copyright (C) 2014 Sapphire Cat <https://github.com/sapphirecat>
 #
 # This program is free software: you can redistribute it and/or modify
@@ -19,584 +19,1084 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use 5.010;
+use mro 'c3';
 use strict;
 use warnings;
 
-our $VERSION = '0.6.3'; # SemVer
+eval 'use IO::File (); use IO::Handle ();' if $] < 5.014;
+use FindBin ();
 
-# Fedora versions handled by this script's runner classes
-our $MIN_KNOWN_VERSION = 20;
-our $MAX_KNOWN_VERSION = 20;
-
-# All languages that can be handled; registered by the runner classes
-our %LANGUAGES = ();
-
-# Path to bundled files in the self-extractor's tarball.  In the future, we
-# MAY pack additional data for the self-extractor to use without risk of our
-# new names clashing with entries inside the user's bundle directory.
-our $TAR_TOPLEVEL_DIR = 'pack';
-
-# LAYOUT:
-#
-# - a bunch of Runner::* classes that provide the precise details, for each
-#   supported language_version + fedora_version combination.  They're using
-#   the 'base' module because 'parent' didn't get into core Perl until 5.10.1.
-#
-# - a MultiRunner that can handle installing multiple languages (but you still
-#   only get to have *one* primary script for your provisioner.)  We'll
-#   actually use this one later to cover all @bundle_langs.
-#
-# - package main, that gets information from the runners and builds the
-#   bundle.  (Runners are invoked guest-side to do the _actual_ instance
-#   customization; the provisioner built here only installs the language, and
-#   desirable dependency/build tools such as carton for Perl.)
-
-
-
-package Runner;
-
-use File::Spec::Functions qw(catdir catfile splitpath);
-use Scalar::Util qw(blessed);
-
-sub _register {
-	# Bind SomeClass::X[::Y] as a provider of language X.
-	# Or if it does't fit that template, class X itself.
-	my $cls = shift;
-	die "You should call __PACKAGE__->_register while loading your module" if ref $cls;
-	if ($cls =~ /^[^:]+::([^:]+)/) {
-		$::LANGUAGES{$1} = $cls;
-	} else {
-		$::LANGUAGES{$cls} = $cls;
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::System.pm"));
+		$::INC{$mod_tail} = $0;
 	}
+package App::FedoraPack::System;
+
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
+
+use Cwd qw(abs_path);
+use File::Spec::Functions qw(catfile splitpath splitdir abs2rel file_name_is_absolute);
+use List::Util qw(max);
+
+my $sys = {};
+my $feature = {};
+
+# Given a system and versions it handles, register the invoked module as
+# providing them all.  Called in System::X as __PACKAGE__->register().
+sub register {
+	my ($cls, $name, $versions_aref) = @_;
+	die q{Call __PACKAGE__->register($name, \\@versions) while loading a System subclass} if ref $cls;
+	for my $v (@$versions_aref) {
+		$sys->{$name}{$v} = $cls;
+	}
+
 	return $cls;
 }
 
-
-sub new {
-	my ($cls, $fedora_ver, $scriptpath) = @_;
-	my $self = {
-		version => $fedora_ver,
-		script => $scriptpath,
-	};
-	bless $self, $cls;
+sub is_system {
+	return exists($sys->{$_[1]});
 }
 
-sub verify {
-	my $self = shift;
-	my $rootdir = shift;
-	my (undef, $dirs, $file) = splitpath($self->{script});
-	my $target = catfile(catdir($rootdir, $dirs), $file);
-	return "Runner $target is a symlink" if -l $target;
-	return "Runner $target is not a file" unless -f $target;
-	return '';
+sub is_system_version {
+	return exists($sys->{$_[1]}) && exists($sys->{$_[1]}{$_[2]});
 }
 
-
-sub get_sh_cmd {
-	my $self = shift;
-	my $cls = blessed($self);
-	die "get_sh_cmd must be called on an object instance, not $self" unless $cls;
-
-	# Default: the 2nd-level package name, e.g. X in Runner::X or MyRun::X::Y.
-	# Side-by-side language installs will override (e.g. "python2" -> "python")
-	# If the class name desn't have a second-level instance, return the whole
-	# thing.
-	return ($cls =~ /\A[^:]+::([^:]+)/) ? $1 : $cls;
+# Return all registered systems for command-line parsing.
+sub get_systems {
+	return [ keys %$sys ];
 }
 
-sub get_script {
-	return shift->{script};
+# Return the registered versions for a given system.
+sub get_versions {
+	my $copy = {};
+	for my $n (keys %$sys) {
+		$copy->{$n} = [ keys %{ $sys->{$n} } ];
+	}
+	return $copy;
 }
 
-sub get_install_packages {
-	return ();
-}
+# Resolve a (system, version) pair to a registered module name.
+sub get_module {
+	my ($cls, $s_name, $version) = @_;
+	die "No such system: $s_name" unless $sys->{$s_name};
 
-sub get_post_install_script {
-	return '';
-}
+	$version ||= max(keys %{$sys->{$s_name}});
 
-
-sub create_setup_script {
-	my ($self, $script, $mapper) = @_;
-	$mapper ||= $self;
-
-	$script =~ s/\@TAR_TOPDIR\@/$TAR_TOPLEVEL_DIR/g;
-
-	if (my @pkgset = $mapper->get_install_packages) {
-		my $pkgstr = join(' ', @pkgset);
-		$script =~ s/\@PACKAGES\@/$pkgstr/g;
-	} else {
-		# No packages? Delete the yum line entirely. Note the /m flag!
-		$script =~ s/^.*\@PACKAGES\@.*$//gm;
+	if (my $mod = $sys->{$s_name}{$version}) {
+		return $mod;
 	}
 
-	my $post_sh = $mapper->get_post_install_script // '';
-	$script =~ s/\@POST_SH\@/$post_sh/g;
-	undef $post_sh;
+	die "No such version for system $s_name: $version";
+}
 
-	my $run_cmd = join(' ',
-		map { s/'/'\\''/g; "'$_'" } ($mapper->get_sh_cmd, $mapper->get_script));
-	$script =~ s/\@RUNNER\@/$run_cmd/g;
-	return $script;
+# Given the (system, version) args, find the module registered for it, and
+# build an instance of that module.
+sub get_new {
+	my ($cls, @args) = @_;
+	return $cls->get_module(@args)->new(@args);
 }
 
 
-package MultiRunner;
-use Scalar::Util qw(blessed);
+sub register_feature {
+	my ($mod, $name, $handler) = @_;
 
+	die "Feature already registered: $name" if exists $feature->{$name};
+	$feature->{$name} = $handler;
+
+	return $mod;
+}
+
+sub is_feature {
+	return exists($feature->{$_[1]});
+}
+
+sub get_features {
+	return [ keys %$feature ];
+}
+
+
+
+# Return a new object recording the (system, version) args -- normally, the
+# values passed to get_new that resolved the App::FedoraPack::System::* module
+# being called here.  (Sorry, it's weird.)
+#
+# tl;dr: use App::FedoraPack::System->get_new() instead of this.
 sub new {
-	my $cls = shift;
-	my $primary = shift;
+	my ($mod, $s_name, $version) = @_;
 	my $self = {
-		seen => { blessed($primary) => 1 },
-		order => [ $primary ],
-		primary => $primary,
-		script => $primary->{script},
+		system => $s_name,
+		version => $version,
+		# for generating paths for the *target* system to interpret, see our
+		# host_catfile etc. methods
+		filespec => 'File::Spec::Unix',
+
+		pre_scripts => [],
+		packages => [],
+		scripts => [],
+		binaries => {},
+
+		targets => [],
+		target_scripts => [],
+
+		enabled => {}, # enabled languages/features/etc.
 	};
-	my $obj = bless $self, $cls;
-	$obj->add(@_) if @_;
-	return $obj;
+	bless $self, $mod;
 }
 
-sub add {
-	my $self = shift;
-	for my $runner (@_) {
-		my $lang = blessed($runner);
-		unless ($self->{seen}{$lang}) {
-			push(@{$self->{order}}, $runner);
-			$self->{seen}{$lang} = 1;
-		}
-	}
+sub _add {
+	my ($self, $kind, @items) = @_;
+	push(@{ $self->{$kind} }, @items);
 	return $self;
 }
 
-sub set_primary {
-	my ($self, $runner, $script_name) = @_;
-	$self->add($runner);
-	$self->{primary} = $runner;
-}
-
-
-sub verify {
+# Add a directory to bundle
+sub add_targets {
 	my $self = shift;
-	$self->{primary}->verify;
+	$self->_add('targets', @_);
 }
 
 
-sub get_install_packages {
+# Add to the list of packages to install from the package manager
+sub add_installs {
 	my $self = shift;
-	return map { ($_->get_install_packages) } @{ $self->{order} };
+	$self->_add('packages', @_);
 }
 
-sub get_post_install_script {
+# Add to the list of bash commands to run after the package manager
+sub add_scripts {
 	my $self = shift;
-	return join("\n", map { ($_->get_post_install_script) } @{ $self->{order} });
+	$self->_add('scripts', @_);
 }
 
-sub get_sh_cmd {
+# add scripts to run before the package manager
+sub add_pre_scripts {
 	my $self = shift;
-	die "Cannot build guest script without primary runner" unless $self->{primary};
-
-	my $main_runner = $self->{primary};
-	return $main_runner->get_sh_cmd;
+	unshift(@{ $self->{pre_scripts} }, @_); # not _add(): we don't want to push()
 }
 
-sub get_script {
+
+sub host_catfile {
 	my $self = shift;
-	return $self->{primary}->get_script;
+	$self->{filespec}->catfile(@_);
 }
 
-
-sub create_setup_script {
-	my ($self, $script, $info_source) = @_;
-	$self->{primary}->create_setup_script($script, $info_source || $self);
-}
-
-
-package Runner::bash;
-use base 'Runner';
-__PACKAGE__->_register;
-
-
-package Runner::perl;
-use base 'Runner';
-__PACKAGE__->_register;
-
-sub get_install_packages {
-	return qw(perl perl-core perl-App-cpanminus perl-local-lib);
-}
-
-sub get_post_install_script {
-	return 'cpanm -S Carton';
-}
-
-
-package Runner::php;
-use base 'Runner';
-__PACKAGE__->_register;
-
-sub get_install_packages {
-	return 'php-cli';
-}
-
-sub get_post_install_script {
-	return <<INSTALL;
-curl -LSs https://getcomposer.org/installer | php
-sudo install -m 0755 -o root -g root composer.phar /usr/bin/composer
-INSTALL
-}
-
-package Runner::pear;
-use base 'Runner::php';
-__PACKAGE__->_register;
-
-sub get_sh_cmd {
-	return 'php';
-}
-
-sub get_install_packages {
+sub host_catdir {
 	my $self = shift;
-	return ($self->SUPER::get_install_packages, 'php-pear');
+	$self->{filespec}->catdir(@_);
 }
 
-sub get_post_install_script {
-	return ''; # restore the default (don't install composer)
-}
+sub splitpath_and_dirs {
+	my ($self, $thing, $no_file) = @_;
 
+	my ($vol, $path, $file) = splitpath($thing, $no_file);
+	my (@dirs) = splitdir($path);
+	# splitpath doesn't yield clean paths, confusing splitdir... drop any
+	# `undef` entries from the resulting array
+	@dirs = map { $_ // () } @dirs;
 
-package Runner::python;
-use base 'Runner';
-use File::Spec::Functions qw(catdir catfile);
-
-sub verify {
-	my $self = shift;
-	my $rootdir = shift;
-	# python can run directories that contain __main__.py as well as files
-	# but, we can't check inside zip files because Archive::Zip isn't in core,
-	# so we hope the user did it right in that case.
-	my $target = catdir($rootdir, $self->{script});
-	return '' if -d $target && -f catfile($target, '__main__.py');
-	return $self->SUPER::verify(@_);
-}
-
-package Runner::python2;
-use base 'Runner::python';
-__PACKAGE__->_register;
-
-sub get_sh_cmd {
-	return 'python';
-}
-
-sub get_install_packages {
-	return qw(python python-virtualenv python-pip);
-}
-
-package Runner::python3;
-use base 'Runner::python';
-__PACKAGE__->_register;
-
-sub get_install_packages {
-	return qw(python3 python3-pip);
+	return ($vol, [ @dirs ], $file);
 }
 
 
-package main;
+# Locate a script within a target directory; the script may be given as
+# relative to the target; or, if the path resolves within the target, as
+# relative to CWD or as an absolute path.  Returns two values: the target dir,
+# and the path relative to it.
+sub resolve_target_script {
+	my ($self, $script) = @_;
 
-use Archive::Tar ();
-use Archive::Tar::Constant qw(SYMLINK);
-use Cwd qw(abs_path);
-use File::Basename qw(basename dirname);
-use File::Find qw(find);
-use File::Spec::Functions qw(catfile abs2rel file_name_is_absolute);
-use Getopt::Long qw(GetOptions);
-use IO::Compress::Gzip ();
+	die "Cannot resolve script $script without bundle dir set" unless @{ $self->{targets} };
 
-# There's a stage1 script in the DATA filehandle that the Runner::X classes
-# fill out.  The main script knows what languages exist because it defined
-# %LANGUAGES at the start, and the runners use Runner->_register to enter
-# themselves into that hash.
-#
-# When instantiated (based on command-line args), Runner::X classes receive
-# the Fedora version in new(), so they can handle the vagaries of running
-# language X on the specific Fedora version themselves.
-#
-# In fact, the Runner hierarchy is set up to allow for Fedora::python2::v20_23
-# and Fedora::python2::v24 should Fedora seriously change how python2 works in
-# version 24.
-#
-# TODO: package all downloadables with fedora-pack and include them inside the
-# provisioner when their language is selected.  "Your build process should not
-# download random pieces of the Internet."
-#
-# Stuff to handle, then:
-# - Carton (via minicpan)
-# - composer (easy: it's one file)
-# - python3-pip virtualenv
+	my $is_valid = sub {
+		return 0 if file_name_is_absolute($_[0]);
+		return -e catfile($_[1], $_[0]);
+	};
+	for my $rootpath (@{ $self->{targets} }) {
+		# If it's already relative to the root, return it immediately.
+		return ($rootpath, $script) if $is_valid->($script, $rootpath);
 
-
-sub get_help_basename () {
-	return basename($0);
-}
-
-sub version () {
-	my $base = get_help_basename();
-	print "$base version $VERSION\n";
-	exit 0;
-}
-
-sub usage (;$$) {
-	my ($code, $msg) = @_;
-	my $base = get_help_basename();
-
-	if ($msg) {
-		select STDERR;
-		print "Error: ", $msg, "\n\n" if $msg;
-		$code //= 2;
-	} else {
-		$code //= 0;
+		# See if it's an absolute path or relative-to-CWD path that points into
+		# the root.  If so, return the relative-to-the-root conversion of it.
+		my $rel_script = abs2rel($script, $rootpath);
+		return ($rootpath, $rel_script) if $is_valid->($rel_script, $rootpath);
 	}
 
+	# Try to give out unambiguous (if possibly confusing) diagnostics.
+	die "Script $script seems to be outside of bundle dir" if -e $script;
+	die "Cannot resolve script $script relative to bundle dir or CWD";
+}
+
+# From a script filename, guess its language
+sub resolve_script_lang {
+	my ($self, $file, $in_dir) = @_;
+
+	return 'perl' if $file =~ /\.pl$/;
+	return 'php' if $file =~ /\.ph(?:p|ar)$/; # php|phar
+	return 'bash' if $file =~ /\.(?:ba)?sh$/; # bash|sh
+	# TODO: use $in_dir to guess based on the script content (e.g. shebang)
+	return 'python2' if $file =~ /\.py$/;
+}
+
+# Generate a [ $interpreter, @options, $tarball_path ] for the given language,
+# script, and root_dir.  Dies on unknown languages or unacceptable scripts.
+sub cmdline_for_script {
+	my $self = shift;
+	my ($lang, $script, $root_dir) = @_;
+	my ($basedir, $bin);
+
+	my ($vol, $dirs, $file) = $self->splitpath_and_dirs($root_dir, 1);
+	$basedir = scalar @$dirs ? pop @$dirs : 'NO_DIRS_WTF';
+	($vol, $dirs, $file) = $self->splitpath_and_dirs($script);
+
+	$bin = $self->{binaries}{$lang};
+	die "No binary loaded for language $lang" unless $bin;
+
+	if ($lang =~ /^python/ && -d catdir($root_dir, $script)) {
+		return [ $bin, $self->host_catdir($basedir, @$dirs, $file) ] if -e catfile($root_dir, $script, '__main__.py');
+	} elsif (-f catfile($root_dir, $script)) {
+		return [ $bin, $self->host_catfile($basedir, @$dirs, $script) ];
+	}
+}
+
+# Add programs to run in target directory
+sub add_target_scripts {
+	my $self = shift;
+	my @scripts;
+
+	for my $script (@_) {
+		my ($lang, $in_dir, $relscript, $cmd);
+
+		if ($script =~ /^(\w+),(.*)$/) {
+			$lang = $1;
+			$script = $2;
+		}
+
+		($in_dir, $relscript) = $self->resolve_target_script($script);
+		$lang ||= $self->resolve_script_lang($relscript, $in_dir);
+
+		my $addlang = "feature_$lang";
+		$self->$addlang() unless $self->{enabled}{$lang};
+		my $cmdline = $self->cmdline_for_script($lang, $relscript, $in_dir);
+		push(@scripts, $cmdline);
+	}
+
+	$self->_add('target_scripts', @scripts);
+}
+
+
+# Convert installs and scripts to bash commands (running as user)
+sub make_install {
+	my ($self) = @_;
+	return join("\n",
+		@{ $self->{pre_scripts} },
+		$self->make_install_cmd($self->{packages}),
+		@{ $self->{scripts} },
+	);
+}
+
+sub get_target_dirs {
+	$_[0]->{targets};
+}
+
+sub get_target_script_cmds {
+	$_[0]->{target_scripts};
+}
+
+# Given a (name, version_provided, version_wanted, package_list_aref), checks
+# that the version_wanted does not exceed version_provided, then requests
+# installation of the package_list_aref.  Dies (using name in the error) if
+# the version check fails.
+sub _add_install_version {
+	my ($self, $name, $binary, $v_avail, $v_want, $pkgset) = @_;
+	if (defined($v_want) && $v_avail < $v_want) {
+		die "$name: requested version $v_want but system only has $v_avail";
+	}
+	$self->{binaries}{$name} = $binary;
+	$self->add_installs(@$pkgset);
+}
+
+# 'protected': given a name and version wanted, call _provides_name and
+# _pkgs_name to find the version provided and package list; then, install the
+# packages if the version requirement is met.  Returns the name as the binary
+# to invoke the main interpreter of the package; or if given an optional
+# binary, returns that instead.
+sub _installer {
+	my ($self, $name, $want_version, $binary) = @_;
+	$binary = $name unless defined $binary;
+
+	my ($provides, $packages) = ("_provides_$name", "_pkgs_$name");
+	$self->_add_install_version($name, $binary, $self->$provides, $want_version,
+		$self->$packages);
+
+	return $binary;
+}
+
+
+# Install composer via shell commands
+# TODO: have an option to use pre-downloaded composer.phar
+sub add_php_composer {
+	my ($self) = @_;
+	my $script = <<SHELL;
+php -r "readfile('https://getcomposer.org/installer');" | php
+sudo install -m 0755 -o root -g root composer.phar /usr/bin/composer
+SHELL
+	$self->add_scripts($script);
+}
+
+
+sub feature_bash {
+	my ($self) = shift;
+	# Considered essential in Debian, default in Fedora; nothing to install
+	$self->{binaries}{bash} ||= 'bash';
+	return 'bash';
+}
+
+sub feature_perl {
+	my ($self, $version) = @_;
+	$self->_installer(perl => $version);
+}
+
+sub feature_php {
+	my ($self, $version) = @_;
+	my $rv = $self->_installer(php => $version);
+	$self->add_php_composer;
+	return $rv;
+}
+
+sub feature_python2 {
+	my ($self, $version) = @_;
+	$self->_installer(python2 => $version, 'python');
+}
+
+sub feature_python3 {
+	my ($self, $version) = @_;
+	$self->_installer(python3 => $version);
+}
+
+1;
+}
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::cli.pm"));
+		$::INC{$mod_tail} = $0;
+	}
+package App::FedoraPack::cli;
+
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
+
+use Archive::Tar ();
+use Archive::Tar::Constant qw(SYMLINK DIR);
+use File::Basename qw(basename dirname);
+use File::Find qw(find);
+use File::Spec::Functions qw(abs2rel rel2abs catfile);
+use IO::Compress::Gzip ();
+
+use App::FedoraPack::System ();
+
+our $VERSION = '0.7.0';
+
+
+my ($sys, $sysver);
+
+
+sub usage {
+	my ($cls, $err) = @_;
+	my $code = 0;
+
+	if (defined $err) {
+		select(STDERR);
+		$code = 2;
+
+		print $err, "\n\n";
+	}
+
+	my $name = basename($0);
 	print <<USAGE;
-Usage: $base [--fedora$MIN_KNOWN_VERSION] {--perl|--php|...}+ [--output=FILE] DIR
+Usage: $name --system-SYS=VER [features ...]
 
-Create a provisioning script for the Fedora Cloud image.  Requested languages
-are installed from yum; languages strive to include native base libraries such
-as Carton or composer.phar.  The tree given by DIR is bundled and packed into
-a single self-extracting file.
-
-All languages accept a "runner" as argument, but only one runner may be
-provided.  The runner must be given as relative to DIR.  The runner will be
-invoked inside the Fedora environment, with the path to the unpacked root as
-its first and only argument.
-
-If a Fedora version is not specified, the highest known version will be used.
+Please see 'perldoc $name' for more information on available features
+and options.
 
 USAGE
-
-	my $langs = {};
-	print "Known Fedora versions:";
-	print " $_" for $MIN_KNOWN_VERSION..$MAX_KNOWN_VERSION;
-	print "\n\nKnown languages:";
-	print " $_" foreach sort(keys %::LANGUAGES);
-	print "\n\n";
 
 	exit $code;
 }
 
-sub resolve_script ($$) {
-	my ($rootpath, $script) = @_;
-
-	my $is_valid = sub {
-		return 0 if file_name_is_absolute($_[0]);
-		return -e catfile($rootpath, $_[0]);
-	};
-
-	# If it's already relative to the root, return it immediately.
-	return $script if $is_valid->($script);
-
-	# See if it's an absolute path or relative-to-CWD path that points into the
-	# root.  If so, return the relative-to-the-root conversion of that path.
-	my $rel_script = abs2rel($script, $rootpath);
-	return $rel_script if $is_valid->($rel_script);
-
-	# Try to give out unambiguous (if possibly confusing) diagnostics.
-	die "Path $script does not seem to be under $rootpath" if -e $script;
-	die "Path $script not found (neither from CWD nor in $rootpath)";
+sub version {
+	my $name = basename($0);
+	print "$name version $::VERSION\n";
+	exit(0);
 }
 
-sub runner_for_lang ($$;$) {
-	my $lang = shift;
-	my $rv = eval {
-		my $pkg = "Runner::$lang";
-		$pkg->new(@_);
-	};
-	die $@ || "Could not find a runner for language: $lang" unless $rv;
+
+sub parse_sysver {
+	my ($cls, $s, $v) = @_;
+
+	$cls->usage("Multiple systems specified: $sys and $s") if defined $sys;
+	$cls->usage("$s requires a version") unless defined $v;
+	$cls->usage("Unknown system $s") unless App::FedoraPack::System->is_system($s);
+	$cls->usage("Unknown version $v for system $s") unless App::FedoraPack::System->is_system_version($s, $v);
+
+	($sys, $sysver) = ($s, $v);
+}
+
+sub parse_cmdline {
+	my ($cls, $argv, $out_fh_ref) = @_;
+	my (@features, @scripts);
+
+	# We want dynamic options (--system-f is valid if System::F is loadable), so
+	# we parse them ourselves instead of using Getopt::Long.
+	my ($ptr, $max, $inc) = (0, $#$argv);
+	while ($ptr <= $max) {
+		my $arg;
+		$_ = $argv->[$ptr];
+		$inc = 1; # number of arguments to consume
+		($inc, $arg) = (2, $argv->[$ptr + 1]) if $ptr < $max;
+
+		# hit a non-option
+		if ($_ eq '--') {
+			++$ptr; # move past explicit end-of-options flag
+			last;
+		} elsif (! /^--/) {
+			last;
+		}
+
+		# parse --option[=value] -> option in $_, value in $arg, $inc reduced if
+		# this option had the value bundled in.
+		s/^--//;
+		if (/^([-a-z0-9]+)=(.*)$/) {
+			($inc, $_, $arg) = (1, $1, $2);
+		} elsif ($arg =~ /^--/) {
+			($inc, $arg) = (1);
+		}
+
+		# parse actual option/arg pair
+		$cls->usage() if /^help$/i || $_ eq '?';
+		$cls->version() if /^version$/;
+		$cls->parse_sysver($1, $arg), next if /^system-([a-z0-9]+)$/;
+		if (/^save-as$/) {
+			$cls->arg_error("--save-as requires an argument") unless defined $arg;
+			open(my $ofh, '>:utf8', $arg) or die "Can't open save-as file $arg: $^E";
+			$$out_fh_ref = $ofh;
+			next;
+		}
+		if (/^exec$/) {
+			$cls->usage("--exec requires an argument") unless defined $arg;
+			push(@scripts, $arg);
+			next;
+		}
+		# defer all feature processing so the System object can do it
+		push(@features, [ $_, $arg ]);
+
+	} continue {
+		# advance pointer
+		$ptr += $inc;
+	}
+
+	$cls->usage("No system specified") unless defined $sys;
+	my $rv = App::FedoraPack::System->get_new($sys, $sysver);
+
+	# consume the arguments we have processed
+	splice(@ARGV, 0, $ptr);
+
+	# perform deferred feature processing via the System
+	for my $feat_desc (@features) {
+		my ($feat, $arg) = @$feat_desc;
+		$feat =~ s/\W/_/g;
+		my $feat_method = "feature_$feat";
+		$rv->$feat_method($arg) if $rv->is_feature($feat);
+	}
+
+	# add in the bundle dirs
+	$cls->usage("No directory given to bundle") unless @ARGV;
+	my $dirset = {};
+	for my $dir (@ARGV) {
+		$cls->usage("Not a directory, can't bundle: $dir") unless -d $dir;
+
+		my $bn = basename($dir);
+		# instead of 'pack/*', let's bundle everything at the toplevel and reserve
+		# /_* for any metadata we may want to add in the future.
+		$cls->usage("Underscore prefix is reserved ($bn), can't add $dir") if $bn =~ /^_/;
+		$cls->usage("Basename collision: $bn already bundled, can't add $dir") if $dirset->{$bn};
+		$dirset->{$bn} = 1;
+	}
+	$rv->add_targets(@ARGV);
+
+	# set scripts
+	$cls->usage("No target (post-install) scripts specified") unless @scripts;
+	$rv->add_target_scripts(@scripts) if @scripts;
+
 	return $rv;
 }
 
 
 
-# CLI structure is:
-#   make-provisioner --fedoraVER [--output=FILE] {--language[=PATH]}+ bundle_path
-#
-# Languages handle their script paths so Python can recognize either =script or =dir_w_main_py
-#
-# There MUST be one bundle path.  Scripts MUST be relative to this path.  One
-# script MUST be given, and there MUST be only one script.
-#
-# If you want to knit together a complex tree or run multiple child scripts,
-# do that in your local build process or from a stub runner script.
+sub get_guest_sh_in {
+	return <<'GUEST_SH';
+#!/usr/bin/env bash
+[ -z $FEDORAPACK_DEBUG ] || set -x
+set -e
 
-# getopt_spec: input to GetOptions
-# options: output of GetOptions
-# bundle_root: path to tree to archive
-# bundle_langs: languages to be included in the bundle
-# scripts: runner script candidates (MUST be exactly 1 after processing)
-my ($options, @getopt_spec);
-my ($bundle_root, @bundle_langs, @scripts);
+FEDORAPACK_TAR_DIR="/var/local/fedora-pack"
 
-$options = {
-	output => 'provisioner.sh',
-};
-@getopt_spec = (
-	'help',
-	'version',
-	'output:s'
-);
-for my $version ($MIN_KNOWN_VERSION..$MAX_KNOWN_VERSION) {
-	$options->{"fedora$version"} = 0;
-	push(@getopt_spec, "fedora$version");
-}
-for my $language (keys %LANGUAGES) {
-	$options->{$language} = undef;
-	push(@getopt_spec, "$language:s");
-}
+# find ourselves
+self_file="$0"
+[ -e "$self_file" ] || self_file="$(command -v "$self_file" 2>/dev/null)"
+cut_line=$(( `grep -an '^#END_STAGE1$' "$self_file" | cut -d: -f1` + 1 ))
+if [ "$cut_line" -le 1 ] ; then
+	echo "Cannot find '#END_STAGE1' line - extraction failed" >&2
+	exit 1
+fi
 
-GetOptions($options, @getopt_spec);
-undef @getopt_spec;
+# make absolute
+[ "$(echo "$self_file" | cut -c1)" == / ] || \
+	self_file="$(pwd -P)/$self_file"
 
+# exec payloads in workdir
+sudo install -d -m 0700 -o `id -un` -g `id -gn` "$FEDORAPACK_TAR_DIR"
+cd "$FEDORAPACK_TAR_DIR"
+@PACKAGE_SCRIPT@
 
-usage(0) if $options->{help};
-version() if $options->{version};
+tail -n +$cut_line "$self_file" | tar zxf -
+export FEDORAPACK_TAR_DIR
+@RUNNER_SCRIPTS@
 
-
-# get/check bundle path
-if (! @ARGV) {
-	usage(2, "A path to bundle must be specified.");
-} elsif (@ARGV > 1) {
-	usage(2, "Only one path to bundle is supported.");
-} elsif (! -d $ARGV[0]) {
-	usage(2, "Path to bundle is not a directory.");
-} else {
-	$bundle_root = abs_path($ARGV[0]);
+# Magic token so that we don't hardcode any line-numbers.
+#END_STAGE1
+GUEST_SH
 }
 
-# gather requested languages and runner scripts
-for my $language (keys %LANGUAGES) {
-	# secondary languages set to ''
-	next unless defined $options->{$language};
-	push(@bundle_langs, $language);
-	my $lang_arg = $options->{$language};
-	if ($lang_arg ne '' && -e catfile($bundle_root, $options->{$language})) {
-		push(@scripts, [$language, $lang_arg]);
+sub quote_cmdline {
+	my ($cls, $cmd) = @_;
+	my @out = ();
+	for (@$cmd) {
+		s/'/'\\''/g;
+		push(@out, "'$_'");
+	}
+
+	return join(' ', @out);
+}
+
+sub generate_guest_stub {
+	my ($cls, $sys, $out_fh) = @_;
+	my $guest_sfx = $cls->get_guest_sh_in();
+
+	{ my $inst = $sys->make_install;
+		$guest_sfx =~ s/\@PACKAGE_SCRIPT\@/$inst/g; }
+
+	{ my $cmds = $sys->get_target_script_cmds;
+		my $txt = join("\012", map { $cls->quote_cmdline($_) } @$cmds);
+		$guest_sfx =~ s/\@RUNNER_SCRIPTS\@/$txt/g; }
+
+	$out_fh->print($guest_sfx);
+}
+
+sub generate_tarball {
+	my ($cls, $sys, $out_fh) = @_;
+	my $dirs = $sys->get_target_dirs();
+
+	# set up gzip stream on output
+	binmode($out_fh, ':raw');
+	my $gz_fh = IO::Compress::Gzip->new($out_fh, -Level => 9)
+		or die "GZip error while opening stream: $IO::Compress::Gzip::GzipError";
+
+	# write tar bundle into gzip stream (into output);
+	# tar formed like "cd `dirname $bundle_root` && tar zcf - $bundle_root"
+	my $tar = Archive::Tar->new();
+
+	for my $bundle_rel (@$dirs) {
+		my $bundle_root = rel2abs($bundle_rel);
+
+		my $add_tar_file = sub {
+			return unless -f $_ || -d _ || -l _;
+
+			local $/; # slurp
+			my $fh;
+			my $rel_file = abs2rel($_, dirname($bundle_root));
+			if (-l $_) {
+				unless (-f _ || -d _) {
+					# target cannot possibly be added
+					warn "skipping non-file/directory symlink to provisioner: $_";
+					return;
+				}
+				$tar->add_data($rel_file, readlink $_, { type => SYMLINK })
+					or warn "Adding symlink $_ to provisioner: ".$tar->error;
+			} elsif (-d _) {
+				$tar->add_data($rel_file, '', { type => DIR });
+			} elsif (-z _) {
+				$tar->add_data($rel_file, '', { size => 0 });
+			} elsif (open($fh, '<:raw', $_)) {
+				$tar->add_data($rel_file, <$fh>)
+					or die "Adding file $rel_file to provisioner: ".$tar->error;
+				close $fh;
+			} else {
+				warn "skipping adding $_ to provisioner due to open error: $^E";
+			}
+		};
+		find({ wanted => $add_tar_file, no_chdir => 1 }, $bundle_root);
+	}
+
+	# Finalize tar/gzip data
+	$tar->write($gz_fh);
+	undef $tar;
+	# old Archive::Tar's always closed their handle
+	if (! ($Archive::Tar::VERSION =~ /^1\.\d{2}$/ && $Archive::Tar::VERSION < 1.60)) {
+		close($gz_fh) or warn "Closing gzip handle: $!";
 	}
 }
 
-# get fedora version arg, or default to latest
-my @iso_version = map { /^fedora(\d+)$/ ? ($1) : () } keys %$options;
-if (@iso_version > 1) {
-	usage(3, "Only one Fedora version can be used.");
-} elsif (! @iso_version) {
-	# check if Getopt left behind a --fedora2 arg or something
-	my @bad_versions = grep { /^--fedora\d+/ } @ARGV;
-	usage(3, "Unknown Fedora version requested: @bad_versions") if @bad_versions;
+sub generate_provisioner {
+	my ($cls, $sys, $out_fh) = @_;
 
-	# no version specified at all, safe to default it.
-	@iso_version = ($MAX_KNOWN_VERSION);
-}
-
-# check languages/scripts
-if (! @bundle_langs) {
-	usage(4, "No languages were specified to bundle.");
-} elsif (! @scripts) {
-	usage(4, "No runner script for any language was provided.");
-} elsif (@scripts > 1) {
-	usage(4, "Only one runner script is supported.");
+	binmode($out_fh, ':unix:utf8');
+	$cls->generate_guest_stub($sys, $out_fh);
+	$cls->generate_tarball($sys, $out_fh);
 }
 
 
+sub main {
+	my ($cls, $argv) = @_;
+	my $out_fh = \*STDOUT;
+	my $sys = $cls->parse_cmdline($argv, \$out_fh);
 
-# check that the runner is inside the bundle tree (and exists)
-# and further, rework the runner to be relative to the bundle root
-my $script_rel_path = eval { resolve_script($bundle_root, $scripts[0][1]) };
-usage(5, $@ || "Could not resolve script relative to bundle dir") unless $script_rel_path;
-
-# get a runner for the script and check that it accepts the path
-my $primary_runner = runner_for_lang($scripts[0][0],
-	$iso_version[0], $script_rel_path);
-my $err = $primary_runner->verify($bundle_root);
-die $err if defined($err) && length($err);
-
-# get an uber-runner that links together all of @bundle_langs
-my $runner = MultiRunner->new($primary_runner);
-$runner->add(map { runner_for_lang($_, $iso_version[0]) } @bundle_langs);
-
-# load the guest's self-extracting script from <DATA> and replace all the
-# placeholders with data from all runners to be bundled
-my $guest_sfx = do {
-	local $/;
-	$runner->create_setup_script(<DATA>);
-};
-close DATA;
-
-
-# start up output stream
-my $out_fh = \*STDOUT;
-if ($options->{output} ne '-') {
-	open($out_fh, '>', $options->{output})
-		or die "Can't open output file $options->{output}: $!";
+	$cls->generate_provisioner($sys, $out_fh);
 }
 
-# write sfx to output
-print $out_fh $guest_sfx;
-undef $guest_sfx;
-
-# set up gzip stream on output
-binmode($out_fh, ':raw');
-my $gz_fh = IO::Compress::Gzip->new($out_fh, -Level => 9, Minimal => 1)
-	or die "GZip error while opening stream: $IO::Compress::Gzip::GzipError";
-
-# write tar bundle into gzip stream (into output);
-# tar formed like "cd `dirname $bundle_root` && tar zcf - $bundle_root"
-chdir(dirname($bundle_root))
-	or die "Can't cd to directory above $bundle_root: $!";
-$Archive::Tar::DO_NOT_USE_PREFIX = 'true';
-my $tar = Archive::Tar->new();
-
-# Archive::Tar doesn't let us pass it a filename to be added under a different
-# name.  To do this without disturbing our CWD, we have to walk the tree
-# ourselves.  (Avoiding chdir may be a self-imposed challenge, though.)
-my $add_tar_file = sub {
-	return unless -f $_;
-
-	local $/; # slurp
-	my $fh;
-	my $rel_file = abs2rel($_, $bundle_root);
-	my $tar_name = catfile($TAR_TOPLEVEL_DIR, $rel_file);
-	if (-l $_) {
-		$tar->add_data($tar_name, readlink $_, { type => SYMLINK })
-			or warn "Adding symlink $_ to provisioner: ".$tar->error;
-	} elsif (-z _) {
-		$tar->add_data($tar_name, '', { size => 0 });
-	} elsif (open($fh, '<:raw', $_)) {
-		$tar->add_data($tar_name, <$fh>)
-			or die "Adding file $rel_file to provisioner: ".$tar->error;
-		close $fh;
-	} else {
-		warn "skipping adding $_ to provisioner due to open error: $!";
+1;
+}
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::System::Debian.pm"));
+		$::INC{$mod_tail} = $0;
 	}
-};
-find({ wanted => $add_tar_file, no_chdir => 1 }, $bundle_root);
+package App::FedoraPack::System::Debian;
 
-# Push the tar data down to gzip.
-$tar->write($gz_fh);
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
 
-# Pack up and go home.
-undef $tar;
-close($gz_fh) or warn "Closing gzip handle: $!";
-close(STDOUT) or warn "Closing stdout: $!";
-exit 0;
+use base qw(App::FedoraPack::System);
+__PACKAGE__->register('debian', [ qw(7 wheezy 8 jessie) ]);
 
-# Guest stage1 provisioner to follow, added by `make` rule.
-#
-# Stage1's role is to set up enough environment so that the designated runner
-# can run (e.g.: yum install ...) in the guest, then unpack the bundled root
-# and invoke the runner within.
-#
-# See: src/make-provisioner/guest.sh
+
+sub new {
+	my $mod = shift;
+	my $self = $mod->SUPER::new(@_);
+
+	return $self unless $self->{system} eq 'debian';
+
+	# normalize version
+	if ($self->{version} !~ /^\d+$/) {
+		$self->{version} = 7 if $self->{version} eq 'wheezy';
+		$self->{version} = 8 if $self->{version} eq 'jessie';
+	}
+
+	if ($self->{version} !~ /^\d+$/) {
+		die "Unrecognized Debian version: $self->{version}";
+	}
+
+	return $self;
+}
+
+
+sub make_install_cmd {
+	my ($self, $pkgset) = @_;
+	return join("\n",
+		'export DEBIAN_FRONTEND=noninteractive',
+		# Ubuntu doesn't keep security updates at time T on mirrors forever, so if
+		# we have an AMI built at T, and ask to install stuff, it may not be
+		# possible (without this update) if a stale security update is the latest
+		# in the local cache.  (This actually did happen to me once.)
+		'sudo apt-get -q -y update',
+		# install through aptitude so we can use -R (--without-recommends)
+		'command -v aptitude >/dev/null 2>&1 || sudo apt-get -q -y install aptitude',
+		"sudo aptitude -q -y -R install @$pkgset",
+	);
+}
+
+
+sub _provides_perl {
+	my ($self) = @_;
+
+	return 5.20 if $self->{version} >= 8;
+	return 5.14;
+}
+
+sub _pkgs_perl {
+	return [ qw(perl cpanminus liblocal-lib-perl carton) ];
+}
+
+
+sub _provides_php {
+	my ($self) = @_;
+
+	return 5.6 if $self->{version} >= 8;
+	return 5.4;
+}
+
+sub _pkgs_php {
+	return [ qw(php5-cli curl php5-curl) ];
+}
+
+
+sub _provides_python2 {
+	return 2.7;
+}
+
+sub _pkgs_python2 {
+	my ($self) = @_;
+	my $venv = $self->{version} >= 8 ? 'virtualenv' : 'python-virtualenv';
+	return [ qw(python python-pip), $venv ];
+}
+
+sub _provides_python3 {
+	my ($self) = @_;
+	return 3.4 if $self->{version} >= 8;
+	return 3.2;
+}
+
+sub _pkgs_python3 {
+	my ($self) = @_;
+	my $venv = $self->{version} >= 8 ? 'virtualenv' : 'python3-virtualenv';
+	return [ qw(python3 python3-pip), $venv ];
+}
+
+1;
+}
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::System::Fedora.pm"));
+		$::INC{$mod_tail} = $0;
+	}
+package App::FedoraPack::System::Fedora;
+
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
+
+use base qw(App::FedoraPack::System);
+__PACKAGE__->register('fedora', [ qw(20 21) ]);
+
+sub _provides_perl {
+	my ($self) = @_;
+
+	return 5.20 if $self->{version} >= 21;
+	return 5.18;
+}
+
+sub _pkgs_perl {
+	return [ qw(perl perl-core perl-App-cpanminus perl-local-lib) ];
+}
+
+sub feature_perl {
+	my $self = shift;
+	$self->add_scripts('cpanm -n -S carton');
+	$self->SUPER::feature_perl(@_);
+}
+
+
+sub _provides_php {
+	my ($self) = @_;
+
+	return 5.6 if $self->{version} >= 21;
+	return 5.5;
+}
+
+sub _pkgs_php {
+	return [ qw(php-cli) ];
+}
+
+
+sub _provides_python2 {
+	return 2.7;
+}
+
+sub _pkgs_python2 {
+	return [ qw(python python-virtualenv python-pip) ];
+}
+
+sub _provides_python3 {
+	my ($self) = @_;
+
+	return 3.4 if $self->{version} >= 21;
+	return 3.3;
+}
+
+sub _pkgs_python3 {
+	return [ qw(python3 python3-pip) ];
+}
+
+1;
+}
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::System::AmazonLinux.pm"));
+		$::INC{$mod_tail} = $0;
+	}
+package App::FedoraPack::System::AmazonLinux;
+
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
+
+use base qw(App::FedoraPack::System::Fedora);
+__PACKAGE__->register('amazon', [ qw(2014.09) ]);
+__PACKAGE__->register_feature('epel', 'enable_epel');
+
+sub _provides_perl {
+	return 5.16;
+}
+
+
+sub _provides_php {
+	return 5.5; # highest version in repo
+}
+
+sub _pkgs_php {
+	return [ qw(php55-cli) ];
+}
+
+
+sub _provides_python2 {
+	return 2.7;
+}
+
+sub _pkgs_python2 {
+	return [ qw(python27 python27-pip) ];
+}
+
+sub feature_python2 {
+	my $self = shift;
+	$self->add_scripts('sudo pip install virtualenv');
+	$self->SUPER::feature_python2(@_);
+}
+
+
+sub _provides_python3 {
+	return 0;
+}
+
+
+sub enable_epel {
+	my ($self) = @_;
+	my $script = <<'BASH';
+out=`mktemp -t "epel-$$-XXXXXXXX.repo"`
+awk -F= </etc/yum.repos.d/epel.repo >"$out" '
+	BEGIN { in_epel=0 }
+	/^\[/ { in_epel=0 }
+	/^\[epel\]/ { in_epel=1 }
+	in_epel=1 && $1 == "enabled" { $0="enabled=1" }
+	1'
+sudo cp "$out" /etc/yum.repos.d/epel.repo
+BASH
+	$self->add_pre_scripts($script);
+}
+
+1;
+}
+{
+	BEGIN {
+		my $mod_tail = join('/', split(/::/, "App::FedoraPack::System::Ubuntu.pm"));
+		$::INC{$mod_tail} = $0;
+	}
+package App::FedoraPack::System::Ubuntu;
+
+use 5.010;
+use mro 'c3';
+use strict;
+use warnings;
+
+use base qw(App::FedoraPack::System::Debian);
+__PACKAGE__->register('ubuntu', [ qw(14.04 trusty 14.10 utopic) ]);
+
+sub new {
+	my $mod = shift;
+	my $self = $mod->SUPER::new(@_);
+
+	return $self unless $self->{system} eq 'ubuntu';
+
+	# normalize version
+	if ($self->{version} !~ /^[.\d]+$/) {
+		$self->{version} = '14.04' if $self->{version} eq 'trusty';
+		$self->{version} = '14.10' if $self->{version} eq 'utopic';
+	}
+
+	if ($self->{version} !~ /^\d{2}\.\d{2}$/) {
+		die "Unrecognized Ubuntu version: $self->{version}"
+	}
+
+	return $self;
+}
+
+
+sub _provides_perl {
+	my ($self) = @_;
+
+	return 5.20 if $self->{version} >= 14.10;
+	return 5.18;
+}
+
+sub _provides_php {
+	my ($self) = @_;
+
+	return 5.5;
+}
+
+sub _provides_python2 {
+	return 2.7;
+}
+
+sub _provides_python3 {
+	return 3.4;
+}
+
+1;
+}
+
+{
+	package main;
+
+	BEGIN {
+		if (! exists($INC{'App/FedoraPack/cli.pm'})) {
+			# TODO: recursively enumerate *.pm modules in BFS under $FB::Bin and use
+			# them all, instead of hardcoding the leaves
+			eval <<EVAL;
+			use lib \$FindBin::Bin;
+			use App::FedoraPack::cli;
+			use App::FedoraPack::System::Ubuntu;
+			use App::FedoraPack::System::AmazonLinux;
+EVAL
+		}
+	}
+
+	App::FedoraPack::cli->main(\@ARGV);
+}
+
+__END__
+
+=head1 NAME
+
+make-provisioner - create Packer shell provisioners for Linux guests
+
+=head1 SYNOPSIS
+
+	# the minimal command
+	make-provisioner --system-ubuntu=utopic --exec=main.sh ../bundle
+	
+	# include some other languages, specify exec language explicitly;
+	# this will invoke bundle/provision.py in the guest
+	make-provisioner --system-fedora=20 --python3 --perl --php \
+		--exec=python3,provision.py ../bundle
+
+=head1 DESCRIPTION
+
+B<make-provisioner> builds a Packer shell provisioner based on some files in
+the host filesystem, for use with a supported Linux guest.
+
+The source tree must contain at least one driver script (defined by the
+I<--exec> option), and optionally, a collection of other files that the driver
+needs to do its job.
+
+All these are packed together into a gzip-compressed tar archive as the
+payload of a self-extracting bash script.  Upon being used as a provisioner,
+the tarball is extracted again, and the driver script launched inside the
+guest system.
+
+By the time the provisioner is run, any known features (such as languages,
+extra repos, or similar) defined by the guest packages and requested as
+options during the run of B<make-provisioner> are already added.
+
+=head1 SUPPORTED GUESTS
+
+=over 4
+
+=item Debian: 7.x (wheezy) - 8.x (jessie)
+
+Chosen using I<--system-debian=8> style, or I<--system-debian=jessie>.
+
+=item Ubuntu: 14.04 LTS (Trusty Tahr) - 14.10 (Utopic Unicorn)
+
+Chosen using I<--system-ubuntu=14.04> style, or I<--system-ubuntu=trusty>.
+
+=item Fedora: 20 - 21
+
+Chosen using I<--system-fedora=21> style.
+
+=item Amazon Linux: 2014.09
+
+The Amazon Linux AMI.  As this distribution has a rolling release, only the
+latest version at the time of fedora-pack's release is supported.  The version
+is, however, still required.
+
+Chosen using I<--system-amazon=2014.09>, or without using the version, as
+I<--system-amazon>.  However, the latter style will not produce an error if
+fedora-pack does not support the desired/current Amazon Linux release.
+
+Local option: I<--epel> will enable the EPEL repo for packages.  By default,
+only the base repo is enabled.
+
+=back
+
+=head1 SUPPORTED FEATURES
+
+The base B<fedora-pack> system supports the following features to pre-install.
+All features currently described here take an optional version as well, to
+require a minimum version of the language.  E.g. C<--perl 5.16> will fail on
+Debian Wheezy, which only provides 5.14, while it will succeed on Ubuntu
+Utopic, which provides 5.20.
+
+=over 4
+
+=item bash
+
+The Bourne-Again Shell.  This is already installed on all supported guests,
+but provided for completeness.  It is automatically included (and invoked on)
+C<--exec> scripts ending in I<.sh>.
+
+=item perl
+
+The Perl 5 language, with I<cpanm>, I<carton>, and I<local::lib> also
+installed.  It is invoked for scripts ending in I<.pl>.
+
+=item php
+
+The PHP language, with I<composer> installed as C</usr/bin/composer>.  It is
+invoked for scripts ending in I<.php>.
+
+=item python2 and python3
+
+The 2.x and 3.x versions of the Python language, respectively.  The current
+version of fedora-pack B<only> installs the vanilla Python package, with no
+additions (notably, older versions used to install pip and virtualenv.)
+
+Scripts ending in I<.py> are ambiguous; while they are currently invoked with
+Python 2, B<this may change in the future.>  It is safest to invoke them using
+an specified language, as in C<--exec=python3,path/to/script.py>.
+
+=back
+
+=head1 SEE ALSO
+
+L<http://packer.io/>, L<http://docker.io>
+
+(This has little to do with Docker, but you may find it suits your needs
+better than Packer.)
+
+=cut
+
+
 __DATA__
-#!/bin/bash
+#!/usr/bin/env bash
 [ -z $FEDORAPACK_DEBUG ] || set -x
 set -e
 
@@ -616,8 +1116,7 @@ fi
 # exec payloads in workdir
 sudo install -d -m 0700 -o `id -un` -g `id -gn` /var/local/fedora-pack
 cd /var/local/fedora-pack
-sudo yum -q -y install @PACKAGES@
-@POST_SH@
+@PACKAGE_SCRIPT@
 
 tail -n +$cut_line "$self_file" | tar zxf -
 cd @TAR_TOPDIR@
