@@ -33,7 +33,7 @@ sub build_binaries {
 		}
 
 		my $bin_name = catfile($FindBin::Bin, 'bin', $bin);
-		open(my $fh, '>:utf8', $bin_name)
+		open(my $fh, '>:unix:utf8', $bin_name)
 			or die "opening $bin_name for output: $^E";
 		stream_modules($fh, catfile($root_dir, 'main.pl'), $st->{order});
 
