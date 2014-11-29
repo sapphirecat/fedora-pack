@@ -54,7 +54,7 @@ with the `--save-as=` option.
 dependency management along with the language itself.  When `--perl` is
 included, this means that the full core Perl is installed, along with `cpanm`,
 `local::lib`, and even `carton`.  Likewise, `--php` will install not only
-php-cli, but `/usr/bin/composer.phar`; and python 2 and 3 each include pip and
+php-cli, but `/usr/bin/composer`; and python 2 and 3 each include pip and
 virtualenv.  (The latter will be named according to the platform convention;
 `make-provisioner` does not try to establish its own standard.)
 
