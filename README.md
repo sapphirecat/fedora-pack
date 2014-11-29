@@ -10,6 +10,12 @@ fedora-pack currently consists of two parts:
 2. **make-provisioner** which creates a shell provisioner from a tree of
 	 files.
 
+## A Word of Caution
+
+I abandoned using Fedora Cloud as it would frequently corrupt its disk on
+shutdown of a local VM.  I don’t exercise `fedora2ova` nor the Fedora system
+code in `make-provisioner` myself anymore.
+
 
 # fedora2ova example
 
@@ -34,25 +40,28 @@ fedora2ova` for more details.
 
 # make-provisioner example
 
-    ./bin/make-provisioner --fedora20 --perl=install.pl ~/make_server
+    ./bin/make-provisioner --system-ubuntu=trusty --exec=install.pl ~/make_server
 
 This creates a self-extracting provisioner containing all regular files and
 symlinks within `make_server`.  When this provisioner is run on the guest by
 packer, it will install Perl, unpack the `make_server` tree, and run
-`make_server/install.pl` using the system Perl.
+`make_server/install.pl` using the system Perl it installed.
 
-The output is `provisioner.sh` by default, which can be changed with the
-`--output=` option.
+The provisioner is written to standard output by default, which can be changed
+with the `--save-as=` option.
 
 **make-provisioner** tries to be helpful, and will install some basic
 dependency management along with the language itself.  When `--perl` is
 included, this means that the full core Perl is installed, along with `cpanm`,
-`local::lib`, and even `Carton`.  Likewise, `--php` will install not only
-php-cli, but `/usr/bin/composer.phar`; ruby comes with rubygems, bundler, and
-rake; and python 2 and 3 each include pip and virtualenv.
+`local::lib`, and even `carton`.  Likewise, `--php` will install not only
+php-cli, but `/usr/bin/composer.phar`; and python 2 and 3 each include pip and
+virtualenv.  (The latter will be named according to the platform convention;
+`make-provisioner` does not try to establish its own standard.)
 
-Multiple languages may be requested, but only one may have a script specified.
-For example: `--python --python3 --bash=install.sh`
+As of 0.7.0, multiple bundle directories and scripts to execute are permitted.
+Directory basenames may not collide, nor begin with `_`; in event of collision
+of script names, the first one found will be invoked (effectively shadowing
+the rest).
 
 
 # Dependencies
@@ -71,10 +80,12 @@ does expect a complete core installation of Perl (install `perl-core` on
 Fedora) but it relies on absolutely nothing from the CPAN.  And it’s proud of
 it.
 
+0.7.0 is mainly tested on Strawberry Perl 5.10.0-6 portable.
+
 ## Disk Space
 
-At least a gigabyte free is recommended.  The process will create multiple
-disk images:
+At least a gigabyte free is recommended for using `fedora2ova`.  The process
+will create multiple disk images:
 
 * An uncompressed raw image from Fedora.
 * An uncompressed VDI image attached to the VM.
@@ -103,13 +114,3 @@ needs a little help to decompress.  These commands will be run automatically
 by fedora-pack only when needed.
 
 On a reasonably modern Linux host, xz was probably installed by default.
-
-
-# Development dependencies
-
-## GNU Make
-
-Or any make which understands the `:=` and `.PHONY:` syntax.  make-provisoner
-is built with make from separate files so that the sources can be
-syntax-highlighted appropriately (otherwise, the whole `__DATA__` stream
-appears as a comment.)
