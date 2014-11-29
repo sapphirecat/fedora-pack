@@ -431,7 +431,10 @@ USAGE
 
 sub version {
 	my $name = basename($0);
-	print "$name version $::VERSION\n";
+	say "$name version $VERSION";
+	if (defined $::VERSION) {
+		say "running from main package version $VERSION";
+	}
 	exit(0);
 }
 
@@ -473,7 +476,7 @@ sub parse_cmdline {
 		s/^--//;
 		if (/^([-a-z0-9]+)=(.*)$/) {
 			($inc, $_, $arg) = (1, $1, $2);
-		} elsif ($arg =~ /^--/) {
+		} elsif (defined($arg) && $arg =~ /^--/) {
 			($inc, $arg) = (1);
 		}
 
