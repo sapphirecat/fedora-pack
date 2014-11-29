@@ -45,8 +45,17 @@ sub _provides_python2 {
 	return 2.7;
 }
 
+sub _pkgs_python2 {
+	return [ qw(python python-pip python-virtualenv) ];
+}
+
 sub _provides_python3 {
 	return 3.4;
 }
+
+sub _pkgs_python3 {
+	return [ qw(python3 python3-pip python3-virtualenv) ];
+}
+
 
 1;

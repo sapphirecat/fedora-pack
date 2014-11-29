@@ -140,9 +140,8 @@ invoked for scripts ending in I<.php>.
 
 =item python2 and python3
 
-The 2.x and 3.x versions of the Python language, respectively.  The current
-version of fedora-pack B<only> installs the vanilla Python package, with no
-additions (notably, older versions used to install pip and virtualenv.)
+The 2.x and 3.x versions of the Python language, respectively, with I<pip> and
+I<virtualenv>.
 
 Scripts ending in I<.py> are ambiguous; while they are currently invoked with
 Python 2, B<this may change in the future.>  It is safest to invoke them using
