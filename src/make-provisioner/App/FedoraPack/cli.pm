@@ -66,7 +66,7 @@ sub parse_sysver {
 
 sub parse_cmdline {
 	my ($cls, $argv, $out_fh_ref) = @_;
-	my (@features, @scripts);
+	my (@features, @scripts, %attrs);
 
 	# We want dynamic options (--system-f is valid if System::F is loadable), so
 	# we parse them ourselves instead of using Getopt::Long.
@@ -98,6 +98,12 @@ sub parse_cmdline {
 		$cls->usage() if /^help$/i || $_ eq '?';
 		$cls->version() if /^version$/;
 		$cls->parse_sysver($1, $arg), next if /^system-([a-z0-9]+)$/;
+		if (/^tar-dir$/) {
+			$cls->arg_error("--$_ requires an argument") unless defined $arg;
+			my $k = $_;
+			$k =~ s/-/_/g;
+			$attrs{$k} = $arg;
+		}
 		if (/^save-as$/) {
 			$cls->arg_error("--save-as requires an argument") unless defined $arg;
 			open(my $ofh, '>:utf8', $arg) or die "Can't open save-as file $arg: $^E";
@@ -122,6 +128,11 @@ sub parse_cmdline {
 
 	# consume the arguments we have processed
 	splice(@ARGV, 0, $ptr);
+
+	# push in simple attributes
+	for my $method (keys %attrs) {
+		$rv->$method($attrs{$method});
+	}
 
 	# perform deferred feature processing via the System
 	for my $feat_desc (@features) {
@@ -161,7 +172,7 @@ sub get_guest_sh_in {
 [ -z $FEDORAPACK_DEBUG ] || set -x
 set -e
 
-FEDORAPACK_TAR_DIR="/var/local/fedora-pack"
+FEDORAPACK_TAR_DIR="@TAR_DIR@"
 
 # find ourselves
 self_file="$0"
@@ -211,6 +222,9 @@ sub generate_guest_stub {
 	{ my $cmds = $sys->get_target_script_cmds;
 		my $txt = join("\012", map { $cls->quote_cmdline($_) } @$cmds);
 		$guest_sfx =~ s/\@RUNNER_SCRIPTS\@/$txt/g; }
+
+	{ my $tar_dir = $sys->tar_dir;
+		$guest_sfx =~ s/\@TAR_DIR\@/$tar_dir/g; }
 
 	$out_fh->print($guest_sfx);
 }

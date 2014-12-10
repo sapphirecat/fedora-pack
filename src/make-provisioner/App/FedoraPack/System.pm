@@ -101,6 +101,7 @@ sub new {
 		# host_catfile etc. methods
 		filespec => 'File::Spec::Unix',
 
+		tar_dir => '/var/local/fedora-pack',
 		pre_scripts => [],
 		packages => [],
 		scripts => [],
@@ -143,6 +144,34 @@ sub add_scripts {
 sub add_pre_scripts {
 	my $self = shift;
 	unshift(@{ $self->{pre_scripts} }, @_); # not _add(): we don't want to push()
+}
+
+
+# accessor for the guest path to extract the tarball into
+sub tar_dir {
+	my $self = shift;
+	if (@_) {
+		# Aw, mittens.
+		# http://www.mingw.org/wiki/Posix_path_conversion
+		#
+		# "If an argument has a = it is considered a variable assignment. The
+		# right hand side is converted according to these rules..."  Except that
+		# those rules NEVER say anything about interpreting '/' as relative to the
+		# msys dir.
+		#
+		# One rule is "argument with semicolon" is treated as "native Windows
+		# path" and not mangled, so we let the user append one (extra) ';' that we
+		# strip back off here... if we think we're under MSYS.
+		if (exists $ENV{MSYSTEM} && $ENV{MSYSTEM} ne '') {
+			my $d = $_[0];
+			$d =~ s|;$||;
+			$self->{tar_dir} = $d;
+		} else {
+			$self->{tar_dir} = $_[0];
+		}
+		return $self;
+	}
+	return $self->{tar_dir};
 }
 
 

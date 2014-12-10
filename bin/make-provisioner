@@ -134,6 +134,7 @@ sub new {
 		# host_catfile etc. methods
 		filespec => 'File::Spec::Unix',
 
+		tar_dir => '/var/local/fedora-pack',
 		pre_scripts => [],
 		packages => [],
 		scripts => [],
@@ -176,6 +177,34 @@ sub add_scripts {
 sub add_pre_scripts {
 	my $self = shift;
 	unshift(@{ $self->{pre_scripts} }, @_); # not _add(): we don't want to push()
+}
+
+
+# accessor for the guest path to extract the tarball into
+sub tar_dir {
+	my $self = shift;
+	if (@_) {
+		# Aw, mittens.
+		# http://www.mingw.org/wiki/Posix_path_conversion
+		#
+		# "If an argument has a = it is considered a variable assignment. The
+		# right hand side is converted according to these rules..."  Except that
+		# those rules NEVER say anything about interpreting '/' as relative to the
+		# msys dir.
+		#
+		# One rule is "argument with semicolon" is treated as "native Windows
+		# path" and not mangled, so we let the user append one (extra) ';' that we
+		# strip back off here... if we think we're under MSYS.
+		if (exists $ENV{MSYSTEM} && $ENV{MSYSTEM} ne '') {
+			my $d = $_[0];
+			$d =~ s|;$||;
+			$self->{tar_dir} = $d;
+		} else {
+			$self->{tar_dir} = $_[0];
+		}
+		return $self;
+	}
+	return $self->{tar_dir};
 }
 
 
@@ -452,7 +481,7 @@ sub parse_sysver {
 
 sub parse_cmdline {
 	my ($cls, $argv, $out_fh_ref) = @_;
-	my (@features, @scripts);
+	my (@features, @scripts, %attrs);
 
 	# We want dynamic options (--system-f is valid if System::F is loadable), so
 	# we parse them ourselves instead of using Getopt::Long.
@@ -484,6 +513,12 @@ sub parse_cmdline {
 		$cls->usage() if /^help$/i || $_ eq '?';
 		$cls->version() if /^version$/;
 		$cls->parse_sysver($1, $arg), next if /^system-([a-z0-9]+)$/;
+		if (/^tar-dir$/) {
+			$cls->arg_error("--$_ requires an argument") unless defined $arg;
+			my $k = $_;
+			$k =~ s/-/_/g;
+			$attrs{$k} = $arg;
+		}
 		if (/^save-as$/) {
 			$cls->arg_error("--save-as requires an argument") unless defined $arg;
 			open(my $ofh, '>:utf8', $arg) or die "Can't open save-as file $arg: $^E";
@@ -508,6 +543,11 @@ sub parse_cmdline {
 
 	# consume the arguments we have processed
 	splice(@ARGV, 0, $ptr);
+
+	# push in simple attributes
+	for my $method (keys %attrs) {
+		$rv->$method($attrs{$method});
+	}
 
 	# perform deferred feature processing via the System
 	for my $feat_desc (@features) {
@@ -547,7 +587,7 @@ sub get_guest_sh_in {
 [ -z $FEDORAPACK_DEBUG ] || set -x
 set -e
 
-FEDORAPACK_TAR_DIR="/var/local/fedora-pack"
+FEDORAPACK_TAR_DIR="@TAR_DIR@"
 
 # find ourselves
 self_file="$0"
@@ -597,6 +637,9 @@ sub generate_guest_stub {
 	{ my $cmds = $sys->get_target_script_cmds;
 		my $txt = join("\012", map { $cls->quote_cmdline($_) } @$cmds);
 		$guest_sfx =~ s/\@RUNNER_SCRIPTS\@/$txt/g; }
+
+	{ my $tar_dir = $sys->tar_dir;
+		$guest_sfx =~ s/\@TAR_DIR\@/$tar_dir/g; }
 
 	$out_fh->print($guest_sfx);
 }
@@ -1093,6 +1136,29 @@ I<virtualenv>.
 Scripts ending in I<.py> are ambiguous; while they are currently invoked with
 Python 2, B<this may change in the future.>  It is safest to invoke them using
 an specified language, as in C<--exec=python3,path/to/script.py>.
+
+=back
+
+=over 4
+
+=item --tar-dir=DIR
+
+Unpack the tarball in the given I<DIR> inside the guest, instead of the
+default B</var/local/fedora-pack>.
+
+Exactly one trailing semicolon will be removed from the end of DIR, so that
+the path can be passed through MSYS based shells unharmed.  This stripping is
+performed if B<MSYSTEM> is set to a non-zero-length value in the environment.
+
+For example: C<--tar-dir=/home/ubuntu/setup> under msys may become
+C<"C:/Program Files (x86)/Git/home/ubuntu/setup">.
+
+Instead, use C<--tar-dir="/home/ubuntu/setup;"> and fedora-pack will translate
+it to C</home/ubuntu/setup>, if C<$MSYSTEM> is a non-empty string.
+
+It's also possible to double up the slash and make msys think it's an UNC
+path, leaving the guest to collapse the doubled leading slash, but that
+offends my sense of aesthetics.
 
 =back
 

@@ -149,6 +149,29 @@ an specified language, as in C<--exec=python3,path/to/script.py>.
 
 =back
 
+=over 4
+
+=item --tar-dir=DIR
+
+Unpack the tarball in the given I<DIR> inside the guest, instead of the
+default B</var/local/fedora-pack>.
+
+Exactly one trailing semicolon will be removed from the end of DIR, so that
+the path can be passed through MSYS based shells unharmed.  This stripping is
+performed if B<MSYSTEM> is set to a non-zero-length value in the environment.
+
+For example: C<--tar-dir=/home/ubuntu/setup> under msys may become
+C<"C:/Program Files (x86)/Git/home/ubuntu/setup">.
+
+Instead, use C<--tar-dir="/home/ubuntu/setup;"> and fedora-pack will translate
+it to C</home/ubuntu/setup>, if C<$MSYSTEM> is a non-empty string.
+
+It's also possible to double up the slash and make msys think it's an UNC
+path, leaving the guest to collapse the doubled leading slash, but that
+offends my sense of aesthetics.
+
+=back
+
 =head1 SEE ALSO
 
 L<http://packer.io/>, L<http://docker.io>
