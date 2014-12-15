@@ -1,3 +1,23 @@
+# Heads Up
+
+`make-provisioner` 0.7 is a complete rewrite from 0.6!  Bugs probably lurk.
+New features:
+
+* Adds support for Fedora 21, Debian 7/8, Ubuntu 14.04/10, and Amazon Linux
+  2014.09.
+* Multiple dirs can be packed.
+* Multiple scripts can be run.
+* The payload can be extracted to an arbitrary directory, instead of
+  hard-coding `/var/local/fedora-pack`.
+
+I haven’t tested this as well as perhaps I should have, but in the interest of
+getting _something_ out there for you to use, here it is.
+
+Report any issues
+[here on github](https://github.com/sapphirecat/fedora-pack/issues),
+please.
+
+
 # Synopsis
 
 **fedora-pack** integrates the
