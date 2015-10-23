@@ -1,22 +1,10 @@
-# Heads Up
+# IMPORTANT: this is now abandonware
 
-`make-provisioner` 0.7 is a complete rewrite from 0.6!  Bugs probably lurk.
-New features:
+Please see [cloud-maker](https://github.com/sapphirecat/cloud-maker) for a
+leaner approach, implemented in Python 3.
 
-* Adds support for Fedora 21, Debian 7/8, Ubuntu 14.04/10, and Amazon Linux
-  2014.09.
-* Multiple dirs can be packed.
-* Multiple scripts can be run.
-* The payload can be extracted to an arbitrary directory, instead of
-  hard-coding `/var/local/fedora-pack`.
-
-I haven’t tested this as well as perhaps I should have, but in the interest of
-getting _something_ out there for you to use, here it is.
-
-Report any issues
-[here on github](https://github.com/sapphirecat/fedora-pack/issues),
-please.
-
+However, as this one is different, I’m leaving it online until the systems it
+supports become hopelessly obsolete.
 
 # Synopsis
 
@@ -29,12 +17,6 @@ fedora-pack currently consists of two parts:
 1. **fedora2ova** which converts the _raw_ disk image to an OVA for Packer.
 2. **make-provisioner** which creates a shell provisioner from a tree of
 	 files.
-
-## A Word of Caution
-
-I abandoned using Fedora Cloud as it would frequently corrupt its disk on
-shutdown of a local VM.  I don’t exercise `fedora2ova` nor the Fedora system
-code in `make-provisioner` myself anymore.
 
 
 # fedora2ova example
