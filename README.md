@@ -1,7 +1,7 @@
 # IMPORTANT: this is now abandonware
 
 Please see [cloud-maker](https://github.com/sapphirecat/cloud-maker) for a
-leaner approach, implemented in Python 3.
+leaner approach, implemented in Python 2.7/3.2+.
 
 However, as this one is different, I’m leaving it online until the systems it
 supports become hopelessly obsolete.
